@@ -1,0 +1,15 @@
+# Core dependencies
+torch==2.7.0
+numpy>=1.24.0
+matplotlib>=3.5.0
+
+# Note: PyTorch 2.7 is a future version. If you meant 2.0.x or 2.1.x, 
+# please adjust accordingly. For the latest stable version, use:
+# torch>=2.0.0,<3.0.0
+
+# For GPU support with specific CUDA versions, visit:
+# https://pytorch.org/get-started/locally/
+
+# System dependencies for video creation (install separately):
+# sudo apt-get install ffmpeg  (on Ubuntu/Debian)
+# brew install ffmpeg          (on macOS)
