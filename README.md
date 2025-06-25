@@ -52,10 +52,18 @@ python train_ring_attractor.py
 ```
 
 This will:
-1. Generate training data on-the-fly
-2. Train the ring attractor network
-3. Visualize weight matrices and performance
-4. Save plots showing network activity and angle tracking
+1. Generate training data on-the-fly (angular velocity and targeted integrated angle)
+2. Train the ring attractor network (take velocity input, and output estimated angle)
+3. Visualize weight matrices (begining and end) and performance
+
+or 
+
+```python
+python train_ring_attractor_save_movie.py
+```
+
+Additionally, this will:
+Save the plot of weights of each 10 training steps (epoch) and compile them into a weight evolution movie (requires ffmpeg)
 
 ### Data Generation
 
@@ -97,7 +105,7 @@ av_signals, angles = dataset.generate_batch(batch_size=128)
 
 ### Loss Functions
 
-1. **Cosine Similarity Loss**: Measures angle prediction accuracy using circular coordinates
+1. **Head Direction Loss**: Measures angle prediction loss against ground-truth
 2. **Bump Amplitude Loss**: Ensures stable total activity (prevents vanishing/exploding)
 
 ### Angle Decoding
@@ -110,6 +118,7 @@ Two methods to extract angle from neural activity:
 
 The training script generates:
 - Weight matrix visualizations (initial and trained)
+- A movie of how three weight matrix evolves (weights for bump maintaining, turn left, turn right)
 - Performance plots showing:
   - Network activity heatmap
   - Bump activity profiles
@@ -119,16 +128,5 @@ The training script generates:
 ## Biological Inspiration
 
 This model is inspired by:
-- Head direction cells in the mammalian brain
 - Ring attractor dynamics in fruit fly navigation circuits
-- Continuous attractor networks for spatial representation
-
-## Requirements
-
-- PyTorch
-- NumPy
-- Matplotlib
-
-## Citation
-
-This implementation is based on principles from computational neuroscience literature on ring attractors and head direction cells.
+- Head direction cells in the mammalian brain
