@@ -2,6 +2,15 @@
 
 This repository implements a biologically-inspired Ring Attractor Neural Network that performs angular velocity integration, mimicking how certain brain circuits (like head direction cells) track angular position.
 
+## Weight Evolution During Training
+
+Watch how the network learns three essential circuits:
+- **W₀ (Self-Maintaining)**: Keeps the activity bump stable when the animal is stationary, maintaining the current heading direction without any sensory or motor input
+- **W_L (Left Turn)**: Activated by left turn motor signals, rotates the bump counterclockwise to track leftward movement
+- **W_R (Right Turn)**: Activated by right turn motor signals, rotates the bump clockwise to track rightward movement
+
+![Weight Evolution](ring_attractor_weights_evolution.gif)
+
 ## Overview
 
 The Ring Attractor Network maintains a localized "bump" of neural activity on a ring of neurons, where the position of this bump represents an angular value (0-2π). By integrating angular velocity inputs over time, the network learns to rotate this bump to track the true angular position.
