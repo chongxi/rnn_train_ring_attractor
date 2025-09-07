@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 from generate_av_integration_data import AVIntegrationDataset
 from train_ring_attractor import LeakyRingAttractor, create_initial_bump, decode_angle_from_population_vector, cosine_similarity_loss, bump_amplitude_loss
 from train_gru import GRU_Integrator, integration_aware_loss
+import time  # Add this import at the top
 
 
 
@@ -68,7 +69,10 @@ def evaluate_trained_models():
     ring_bump_losses = []
     
     # Train Ring Attractor
+    ring_training_times = []
     for step in range(training_steps):
+        step_start_time = time.time()
+        
         av_signal, target_angle = train_dataset.generate_batch(batch_size)
         initial_angle = target_angle[:, 0]
         r_init = create_initial_bump(initial_angle, ring_model.num_neurons, device=device)
@@ -84,12 +88,20 @@ def evaluate_trained_models():
         torch.nn.utils.clip_grad_norm_(ring_model.parameters(), 1.0)
         ring_optimizer.step()
         
+        step_time = time.time() - step_start_time
+        ring_training_times.append(step_time)
+        
         ring_losses.append(total_loss.item())
         ring_bump_losses.append(bump_loss.item())
         if step % 100 == 0:
+            avg_time = np.mean(ring_training_times[-100:]) if len(ring_training_times) >= 100 else np.mean(ring_training_times)
             print(f"Step {step}/{training_steps}, Total Loss: {total_loss.item():.4f}, "
                   f"Main loss: {loss.item():.4f}, "
-                  f"Bump loss: {bump_loss.item():.4f}")
+                  f"Bump loss: {bump_loss.item():.4f}, "
+                  f"Avg time/step: {avg_time*1000:.2f}ms")
+    
+    ring_avg_time = np.mean(ring_training_times)
+    print(f"\nRing Attractor Average Training Time: {ring_avg_time*1000:.2f}ms per step")
     
     print("\n" + "="*60)
     print("TRAINING GRU MODEL")
@@ -108,7 +120,10 @@ def evaluate_trained_models():
     gru_losses = []
     
     # Train GRU
+    gru_training_times = []
     for step in range(training_steps):
+        step_start_time = time.time()
+        
         av_signal, target_angle = train_dataset.generate_batch(batch_size)
         initial_angle = target_angle[:, 0]
         
@@ -122,9 +137,25 @@ def evaluate_trained_models():
         torch.nn.utils.clip_grad_norm_(gru_model.parameters(), 1.0)
         gru_optimizer.step()
         
+        step_time = time.time() - step_start_time
+        gru_training_times.append(step_time)
+        
         gru_losses.append(total_loss.item())
         if step % 100 == 0:
-            print(f"Step {step}/{training_steps}, Loss: {total_loss.item():.4f}")
+            avg_time = np.mean(gru_training_times[-100:]) if len(gru_training_times) >= 100 else np.mean(gru_training_times)
+            print(f"Step {step}/{training_steps}, Loss: {total_loss.item():.4f}, "
+                  f"Avg time/step: {avg_time*1000:.2f}ms")
+    
+    gru_avg_time = np.mean(gru_training_times)
+    print(f"\nGRU Average Training Time: {gru_avg_time*1000:.2f}ms per step")
+    
+    # Print comparison
+    print(f"\n" + "="*60)
+    print("TRAINING TIME COMPARISON")
+    print("="*60)
+    print(f"Ring Attractor: {ring_avg_time*1000:.2f}ms per step")
+    print(f"GRU Model: {gru_avg_time*1000:.2f}ms per step")
+    print(f"GRU is {ring_avg_time/gru_avg_time:.2f}x faster than Ring Attractor")
     
     # Evaluate both models on the same test set
     print("\n" + "="*60)
