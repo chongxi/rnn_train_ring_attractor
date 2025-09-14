@@ -2,7 +2,7 @@
 torch>=2.0.0
 numpy>=1.24.0
 matplotlib>=3.5.0
-
+ninja
 
 # System dependencies for video creation (install separately):
 # sudo apt-get install ffmpeg  (on Ubuntu/Debian)
