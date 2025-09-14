@@ -2,18 +2,37 @@ import torch
 from torch.utils.cpp_extension import load
 import pathlib
 import os
-os.environ["TORCH_CUDA_ARCH_LIST"] = "12.0"
+
+print("----------------------------------------------")
+print("---------------- CHECK GPU -------------------")
+print("----------------------------------------------")
+
+if not torch.cuda.is_available():
+    raise RuntimeError("CUDA is not available")
+
+capability = torch.cuda.get_device_capability(torch.cuda.current_device())
+if capability[0] < 8:
+    raise RuntimeError(f"GPU compute capability {capability[0]}.{capability[1]} is below minimum required (8.0)")
+
+os.environ["TORCH_CUDA_ARCH_LIST"] = f"{capability[0]}.{capability[1]}"
+print(f"Using GPU with compute capability {capability[0]}.{capability[1]}")
+# os.environ["TORCH_CUDA_ARCH_LIST"] = "12.0"
+
+print("--------------------------------------------------------")
+print("---------------- COMPILE CUDA MODULE -------------------")
+print("--------------------------------------------------------")
+
 
 dir_path = pathlib.Path(__file__).parent.absolute()
 print(f"dir_path: {dir_path}")
 
+force_rebuild = False
 build_dir = f"{dir_path}/build"
 
-if not pathlib.Path(build_dir).exists():
-    pathlib.Path(build_dir).mkdir(parents=True)
-else:
-    # Clean the build directory
-    for file in pathlib.Path(build_dir).glob("*"):
+build_path = pathlib.Path(build_dir)
+build_path.mkdir(parents=True, exist_ok=True)
+if force_rebuild:
+    for file in build_path.glob("*"):
         file.unlink()
 
 module = load(
@@ -22,6 +41,10 @@ module = load(
     verbose=True,
     build_directory=build_dir 
 )
+
+print("------------------------------------------------------")
+print("---------------- MAIN PYTORCH CODE -------------------")
+print("------------------------------------------------------")
 
 M = 1024
 N = 2048
