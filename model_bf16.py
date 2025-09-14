@@ -14,11 +14,11 @@ def non_linear(x, activation_name):
         raise ValueError(f"Activation function {activation_name} not supported")
 
 def create_initial_bump(initial_angles, num_neurons, bump_width_factor=10, device='cuda'):
-    initial_angles = initial_angles.to(device)
+    initial_angles = initial_angles.to(device).to(torch.bfloat16)
     bump_centers = initial_angles * num_neurons / (2 * torch.pi)
     bump_centers = bump_centers.unsqueeze(1)
     bump_width = num_neurons / bump_width_factor
-    indices = torch.arange(num_neurons, device=device).unsqueeze(0)
+    indices = torch.arange(num_neurons, device=device, dtype=torch.bfloat16).unsqueeze(0)
     dist = torch.min(torch.abs(indices - bump_centers),
                      num_neurons - torch.abs(indices - bump_centers))
     initial_bump = torch.exp(-(dist**2 / (2 * bump_width**2)))
@@ -113,23 +113,25 @@ class GeneralizedRingAttractorNoGain(nn.Module):
         self.activation_name = activation
         self.initialization = initialization
         self.device = device
-        # Define W_delta7 as a NON-LEARNABLE buffer
-        indices = torch.arange(self.num_neurons, dtype=torch.float32)
+        
+        # Convert indices to bfloat16
+        indices = torch.arange(self.num_neurons, dtype=torch.bfloat16)
         i = indices.unsqueeze(1)
         j = indices.unsqueeze(0)
         angle_diff = 2 * torch.pi * (i - j) / self.num_neurons
         self.register_buffer('W_delta7', torch.cos(angle_diff))
 
-        # Fixed parameters
-        self.J0 = -0.1 * torch.ones(self.num_neurons, self.num_neurons, device=self.device)
+        # Fixed parameters with bfloat16
+        self.J0 = -0.1 * torch.ones(self.num_neurons, self.num_neurons, 
+                                   device=self.device, dtype=torch.bfloat16)
         self.J1 = 0.1
 
-        # Learnable parameters
-        self.Wo = nn.Parameter(torch.randn(self.num_neurons, self.num_neurons) / self.num_neurons ** 0.5)
-
-        # Action weight tensor: (action_dim, num_neurons, num_neurons)
-        # Default init is random
-        self.Wa = nn.Parameter(torch.randn(self.action_dim, self.num_neurons, self.num_neurons) / self.num_neurons ** 0.5)
+        # Learnable parameters with bfloat16
+        self.Wo = nn.Parameter(
+            torch.randn(self.num_neurons, self.num_neurons, dtype=torch.bfloat16) / self.num_neurons ** 0.5)
+        self.Wa = nn.Parameter(
+            torch.randn(self.action_dim, self.num_neurons, self.num_neurons, 
+                       dtype=torch.bfloat16) / self.num_neurons ** 0.5)
 
 
     def forward(self, action_signal, r_init=None):
@@ -196,31 +198,30 @@ class GeneralizedRingAttractorNoGain(nn.Module):
 def train(num_neurons=120, seq_len=120, action_dim=2, training_steps=1000, learning_rate=1e-3, batch_size=128):
     assert torch.cuda.is_available(), "CUDA GPU not detected. Exiting."
     device = torch.device("cuda")
+    
+    # Set default dtype to bfloat16
+    torch.set_default_dtype(torch.bfloat16)
 
     # Create dataset for training data generation
     dataset = AVIntegrationDataset(
-        num_samples=training_steps * batch_size,  # Total samples we might need
+        num_samples=training_steps * batch_size,
         seq_len=seq_len,
         zero_padding_start_ratio=0.1,
         zero_ratios_in_rest=[0.2, 0.5, 0.8],
-        device=device,  # Generate directly on GPU
-        fast_mode=True   # Use fast vectorized generation
+        device=device,
+        fast_mode=True
     )
 
-    # --- MODEL SETUP ---
-    initial_weights = 'random'
+    # Model setup with bfloat16
     ring_rnn = GeneralizedRingAttractorNoGain(
         num_neurons=num_neurons,
         action_dim=action_dim,
         tau=10,
         dt=1,
         activation='gelu',
-        initialization=initial_weights
+        initialization='random'
     )
     ring_rnn.to(device)
-    print(f"\nInitializing model with {initial_weights} weights and action_dim={action_dim}")
-    print("NO GAIN NETWORKS in this version")
-    print("--------------------")
 
     # Optimizer
     optimizer = torch.optim.Adam(ring_rnn.parameters(), lr=learning_rate)
