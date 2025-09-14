@@ -81,18 +81,34 @@ def bump_amplitude_loss(bump_activity, target_amplitude=None):
     
     return amplitude_loss
 
-def av_to_action_signal(av_signal):
+# def av_to_action_signal(av_signal):
+#     """
+#     Convert angular velocity signal to L/R action signals.
+#     Always returns 2D action vector [L, R].
+#     """
+#     batch_size, seq_len = av_signal.shape
+
+#     # Classic L/R setup
+#     L = torch.relu(-av_signal)  # Left rotation (negative velocities)
+#     R = torch.relu(av_signal)   # Right rotation (positive velocities)
+#     action_signal = torch.stack([L, R], dim=2)
+
+#     return action_signal
+
+def av_to_action_signal(av_signal, action_dim=2):
     """
-    Convert angular velocity signal to L/R action signals.
-    Always returns 2D action vector [L, R].
+    Convert angular velocity signal to n-dimensional action signals.
+    Returns action vector of shape [batch_size, seq_len, action_dim].
     """
     batch_size, seq_len = av_signal.shape
-
-    # Classic L/R setup
-    L = torch.relu(-av_signal)  # Left rotation (negative velocities)
-    R = torch.relu(av_signal)   # Right rotation (positive velocities)
-    action_signal = torch.stack([L, R], dim=2)
-
+    
+    actions = []
+    for i in range(action_dim):
+        scale = (i - (action_dim - 1) / 2) / ((action_dim - 1) / 2) if action_dim > 1 else 0
+        action = torch.relu(scale * av_signal)
+        actions.append(action)
+    
+    action_signal = torch.stack(actions, dim=2)
     return action_signal
 
 class GeneralizedRingAttractorNoGain(nn.Module):
@@ -245,7 +261,7 @@ def train(num_neurons=120, seq_len=120, action_dim=2, training_steps=1000, learn
         av_signal, target_angle = dataset.generate_batch(batch_size)
 
         # Convert angular velocity to action signals [L, R]
-        action_signal = av_to_action_signal(av_signal)  # Always 2D for this task
+        action_signal = av_to_action_signal(av_signal, action_dim)  # Always 2D for this task
 
 
         initial_angle = target_angle[:, 0]
@@ -285,9 +301,9 @@ def train(num_neurons=120, seq_len=120, action_dim=2, training_steps=1000, learn
 
 if __name__ == "__main__":
     # --- Training Parameters ---
-    num_neurons = 120
-    seq_len = 120
-    action_dim = 2
+    num_neurons = 256
+    seq_len = 128
+    action_dim = 32
 
     training_steps = 1000
     learning_rate = 1e-3
