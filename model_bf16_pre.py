@@ -105,6 +105,46 @@ def av_to_action_signal_ND(av_signal, action_dim=2):
     
     return action_signal
 
+def process_ring_attractor_sequence(action_signal, r, J0, J1, Wo, Wa, W_delta7, activation_name, 
+                                   Wa_weighted, recurrent_input, r_delta7):
+    """Process entire sequence of ring attractor dynamics."""
+    batch_size, seq_len, action_dim = action_signal.shape
+    bump_history = []
+    r_history = []
+    
+    A = action_signal  # (batch, seq, action_dim)
+    
+    for t in range(seq_len):
+        # Get action vector at time t
+        A_t = A[:, t, :]  # (batch, action_dim)
+
+        # Compute weighted sum of action matrices
+        A_t_expanded = A_t.unsqueeze(-1).unsqueeze(-1)
+        Wa_weighted.copy_(torch.sum(A_t_expanded * Wa.unsqueeze(0), dim=1))
+
+        # Effective weight matrix
+        W_eff = J0 + J1 * Wo + Wa_weighted
+
+        # Recurrent dynamics
+        recurrent_input.copy_((W_eff @ r.unsqueeze(2)).squeeze(2))
+        recurrent_input = non_linear(recurrent_input, activation_name)
+
+        # Update rule (leaky integration)
+        alpha = 0.15
+        r = r * (1 - alpha) + recurrent_input * alpha
+
+        bump_history.append(r)
+
+        # Transform to cosine wave for output
+        r_delta7.copy_(r @ W_delta7)
+        r_max = r_delta7.max(dim=1, keepdim=True)[0]
+        r_delta7.div_(r_max)  # normalize
+
+        r_history.append(r_delta7)
+
+    return torch.stack(r_history, dim=1), torch.stack(bump_history, dim=1)
+
+
 class GeneralizedRingAttractorNoGain(nn.Module):
     """
     Generalized Ring Attractor model with arbitrary action dimensions but WITHOUT gain networks.
@@ -258,41 +298,14 @@ class GeneralizedRingAttractorNoGain(nn.Module):
         recurrent_input = torch.zeros(batch_size, N, device=self.Wo.device, dtype=r.dtype)
         r_delta7 = torch.zeros(batch_size, N, device=self.Wo.device, dtype=r.dtype)
 
-        # NO GAIN COMPUTATION - directly use action signals
-        A = action_signal  # (batch, seq, action_dim)
+        # bump_history[:, t, :].copy_(r)
 
-        for t in range(seq_len):
-            # Get action vector at time t
-            A_t = A[:, t, :]  # (batch, action_dim)
+        # r_history[:, t, :].copy_(r_delta7)
 
-            # Compute weighted sum of action matrices
-            A_t_expanded = A_t.unsqueeze(-1).unsqueeze(-1)
-            Wa_weighted.copy_(torch.sum(A_t_expanded * self.Wa.unsqueeze(0), dim=1))
-
-            # Effective weight matrix
-            W_eff = self.J0 + self.J1 * self.Wo + Wa_weighted
-
-            # Recurrent dynamics
-            recurrent_input.copy_((W_eff @ r.unsqueeze(2)).squeeze(2))
-            recurrent_input = non_linear(recurrent_input, self.activation_name)
-
-            # Update rule (leaky integration)
-            alpha = 0.15
-            r = r * (1 - alpha) + recurrent_input * alpha
-
-            bump_history.append(r)
-            # bump_history[:, t, :].copy_(r)
-
-            # Transform to cosine wave for output
-            r_delta7.copy_(r @ self.W_delta7)
-            r_max = r_delta7.max(dim=1, keepdim=True)[0]
-            r_delta7.div_(r_max)  # normalize
-
-            r_history.append(r_delta7)
-            # r_history[:, t, :].copy_(r_delta7)
-
-        # return r_history, bump_history
-        return torch.stack(r_history, dim=1), torch.stack(bump_history, dim=1)
+        return process_ring_attractor_sequence(action_signal, r, self.J0, self.J1, self.Wo, self.Wa, 
+                                     self.W_delta7, self.activation_name, Wa_weighted, 
+                                     recurrent_input, r_delta7)
+        
 
 def train(num_neurons=120, seq_len=120, action_dim=2, training_steps=1000, learning_rate=1e-3, batch_size=128):
     assert torch.cuda.is_available(), "CUDA GPU not detected. Exiting."
