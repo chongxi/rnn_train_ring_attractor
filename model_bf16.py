@@ -100,15 +100,9 @@ def av_to_action_signal(av_signal, action_dim=2):
     Convert angular velocity signal to n-dimensional action signals.
     Returns action vector of shape [batch_size, seq_len, action_dim].
     """
-    batch_size, seq_len = av_signal.shape
+    scales = torch.linspace(-1, 1, action_dim, device=av_signal.device, dtype=av_signal.dtype)
+    action_signal = torch.relu(av_signal.unsqueeze(-1) * scales)
     
-    actions = []
-    for i in range(action_dim):
-        scale = (i - (action_dim - 1) / 2) / ((action_dim - 1) / 2) if action_dim > 1 else 0
-        action = torch.relu(scale * av_signal)
-        actions.append(action)
-    
-    action_signal = torch.stack(actions, dim=2)
     return action_signal
 
 class GeneralizedRingAttractorNoGain(nn.Module):
@@ -162,8 +156,7 @@ class GeneralizedRingAttractorNoGain(nn.Module):
         self.J0 = self.J0.to(self.Wo.device)
         self.W_delta7 = self.W_delta7.to(self.Wo.device)
 
-        # NO GAIN COMPUTATION - directly use action signals
-        A = action_signal  # (batch, seq, action_dim)
+        
 
         if r_init is None:
             initial_angle = torch.full((batch_size,), torch.pi, device=self.Wo.device)
@@ -173,6 +166,9 @@ class GeneralizedRingAttractorNoGain(nn.Module):
 
         r_history = []
         bump_history = []
+
+        # NO GAIN COMPUTATION - directly use action signals
+        A = action_signal  # (batch, seq, action_dim)
 
         for t in range(seq_len):
             # Get action vector at time t
