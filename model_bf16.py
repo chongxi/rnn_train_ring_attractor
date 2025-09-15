@@ -81,21 +81,21 @@ def bump_amplitude_loss(bump_activity, target_amplitude=None):
     
     return amplitude_loss
 
-# def av_to_action_signal(av_signal):
-#     """
-#     Convert angular velocity signal to L/R action signals.
-#     Always returns 2D action vector [L, R].
-#     """
-#     batch_size, seq_len = av_signal.shape
+def av_to_action_signal(av_signal):
+    """
+    Convert angular velocity signal to L/R action signals.
+    Always returns 2D action vector [L, R].
+    """
+    batch_size, seq_len = av_signal.shape
 
-#     # Classic L/R setup
-#     L = torch.relu(-av_signal)  # Left rotation (negative velocities)
-#     R = torch.relu(av_signal)   # Right rotation (positive velocities)
-#     action_signal = torch.stack([L, R], dim=2)
+    # Classic L/R setup
+    L = torch.relu(-av_signal)  # Left rotation (negative velocities)
+    R = torch.relu(av_signal)   # Right rotation (positive velocities)
+    action_signal = torch.stack([L, R], dim=2)
 
-#     return action_signal
+    return action_signal
 
-def av_to_action_signal(av_signal, action_dim=2):
+def av_to_action_signal_ND(av_signal, action_dim=2):
     """
     Convert angular velocity signal to n-dimensional action signals.
     Returns action vector of shape [batch_size, seq_len, action_dim].
@@ -257,7 +257,7 @@ def train(num_neurons=120, seq_len=120, action_dim=2, training_steps=1000, learn
         av_signal, target_angle = dataset.generate_batch(batch_size)
 
         # Convert angular velocity to action signals [L, R]
-        action_signal = av_to_action_signal(av_signal, action_dim)  # Always 2D for this task
+        action_signal = av_to_action_signal_ND(av_signal, action_dim)  # Always 2D for this task
 
 
         initial_angle = target_angle[:, 0]
