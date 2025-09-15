@@ -112,6 +112,88 @@ class GeneralizedRingAttractorNoGain(nn.Module):
     where A is an action vector of dimension k, and Wa is a tensor of shape (k, N, N)
 
     This version directly uses action signals without any gain modulation.
+
+    1️⃣ Constant Variables (fixed during the loop)
+    Variable	Shape	Comments
+    self.J0	    (256, 256)	Fixed recurrent connectivity
+    self.J1	    ()	Scalar constant
+    self.Wo	    (256, 256)	Learnable but fixed per forward pass
+    self.Wa	    (32, 256, 256)	Learnable action matrices
+    self.W_delta7	(256, 256)	Fixed buffer
+    alpha	    ()	Scalar constant 0.15
+    self.activation_name	str	String specifying non-linearity
+    2️⃣ Changing Variables (update every iteration of t)
+    Variable	        Shape	Comments
+    A_t = A[:, t, :]	(64, 32)	Action vector at time t
+    A_t_expanded 	(64, 32, 256, 256)	For weighted sum computation
+    Wa_weighted	    (64, 256, 256)	Weighted sum of action matrices
+    W_eff	        (64, 256, 256)	Effective weight matrix at time t
+    r	            (64, 256)	Neural state vector (updated each step)
+    recurrent_input	(64, 256)	Input after W_eff multiplication and non-linearity
+    r_delta7	    (64, 256)	Cosine-transformed output
+    r_max	        (64, 1)	Max for normalization
+    r_history (after stacking)	    (64, 128, 256)	Stored outputs over the sequence
+    bump_history (after stacking)	(64, 128, 256)	Stored raw neural states
+
+    Step 1: Take batch 0
+    A_t[0,0] = 0.5, A_t[0,1] = 1.0
+
+
+    Multiply each matrix by the action weight:
+
+    0.5 * Wa[0] =
+    [[0.5, 1.0, 1.5],
+    [2.0, 2.5, 3.0],
+    [3.5, 4.0, 4.5]]
+
+    1.0 * Wa[1] =
+    [[10, 20, 30],
+    [40, 50, 60],
+    [70, 80, 90]]
+
+
+    Add them:
+
+    Wa_weighted[0] =
+    [[10.5, 21.0, 31.5],
+    [42.0, 52.5, 63.0],
+    [73.5, 84.0, 94.5]]
+
+    Step 2: Take batch 1
+    A_t[1,0] = 2.0, A_t[1,1] = 0.1
+
+
+    Multiply:
+
+    2.0 * Wa[0] =
+    [[2, 4, 6],
+    [8, 10, 12],
+    [14, 16, 18]]
+
+    0.1 * Wa[1] =
+    [[1, 2, 3],
+    [4, 5, 6],
+    [7, 8, 9]]
+
+
+    Add them:
+
+    Wa_weighted[1] =
+    [[3, 6, 9],
+    [12, 15, 18],
+    [21, 24, 27]]
+
+    ✅ Final Result
+    Wa_weighted =
+    [
+    [[10.5, 21.0, 31.5],
+    [42.0, 52.5, 63.0],
+    [73.5, 84.0, 94.5]],
+
+    [[3, 6, 9],
+    [12, 15, 18],
+    [21, 24, 27]]
+    ]
     """
     def __init__(self, num_neurons, action_dim=2, tau=10.0, dt=1.0, activation='tanh',
                  initialization='random', device='cuda'):
@@ -146,9 +228,7 @@ class GeneralizedRingAttractorNoGain(nn.Module):
 
     def forward(self, action_signal, r_init=None):
         """
-        Args:
-            action_signal: (batch_size, seq_len, action_dim) - generalized action signals
-            r_init: Initial neural state
+        Pre-allocates memory for tensors to reduce GPU memory fragmentation.
         """
         batch_size, seq_len, action_dim = action_signal.shape
         assert action_dim == self.action_dim, f"Expected action_dim {self.action_dim}, got {action_dim}"
@@ -156,16 +236,27 @@ class GeneralizedRingAttractorNoGain(nn.Module):
         self.J0 = self.J0.to(self.Wo.device)
         self.W_delta7 = self.W_delta7.to(self.Wo.device)
 
-        
+        N = self.num_neurons
 
+        # Initialize r
         if r_init is None:
             initial_angle = torch.full((batch_size,), torch.pi, device=self.Wo.device)
-            r = create_initial_bump(initial_angle, self.num_neurons, device=self.Wo.device)
+            r = create_initial_bump(initial_angle, N, device=self.Wo.device)
         else:
             r = r_init
 
-        r_history = []
         bump_history = []
+        r_history = []
+
+        # Pre-allocate memory for history
+        # r_history = torch.zeros(batch_size, seq_len, N, device=self.Wo.device, dtype=r.dtype)
+        # bump_history = torch.zeros(batch_size, seq_len, N, device=self.Wo.device, dtype=r.dtype)
+        
+
+        # Pre-allocate intermediate tensors
+        Wa_weighted = torch.zeros(batch_size, N, N, device=self.Wo.device, dtype=self.Wa.dtype)
+        recurrent_input = torch.zeros(batch_size, N, device=self.Wo.device, dtype=r.dtype)
+        r_delta7 = torch.zeros(batch_size, N, device=self.Wo.device, dtype=r.dtype)
 
         # NO GAIN COMPUTATION - directly use action signals
         A = action_signal  # (batch, seq, action_dim)
@@ -175,21 +266,14 @@ class GeneralizedRingAttractorNoGain(nn.Module):
             A_t = A[:, t, :]  # (batch, action_dim)
 
             # Compute weighted sum of action matrices
-            # Wa has shape (action_dim, num_neurons, num_neurons)
-            # A_t has shape (batch, action_dim)
-            # We need to compute sum_k(A_t[k] * Wa[k]) for each batch
-
-            # Reshape A_t to (batch, action_dim, 1, 1) for broadcasting
             A_t_expanded = A_t.unsqueeze(-1).unsqueeze(-1)
-
-            # Compute weighted sum: (batch, action_dim, 1, 1) * (action_dim, N, N) -> (batch, N, N)
-            Wa_weighted = torch.sum(A_t_expanded * self.Wa.unsqueeze(0), dim=1)
+            Wa_weighted.copy_(torch.sum(A_t_expanded * self.Wa.unsqueeze(0), dim=1))
 
             # Effective weight matrix
             W_eff = self.J0 + self.J1 * self.Wo + Wa_weighted
 
             # Recurrent dynamics
-            recurrent_input = (W_eff @ r.unsqueeze(2)).squeeze(2)
+            recurrent_input.copy_((W_eff @ r.unsqueeze(2)).squeeze(2))
             recurrent_input = non_linear(recurrent_input, self.activation_name)
 
             # Update rule (leaky integration)
@@ -197,14 +281,17 @@ class GeneralizedRingAttractorNoGain(nn.Module):
             r = r * (1 - alpha) + recurrent_input * alpha
 
             bump_history.append(r)
+            # bump_history[:, t, :].copy_(r)
 
             # Transform to cosine wave for output
-            r_delta7 = r @ self.W_delta7
+            r_delta7.copy_(r @ self.W_delta7)
             r_max = r_delta7.max(dim=1, keepdim=True)[0]
-            r_delta7 = r_delta7 / r_max
+            r_delta7.div_(r_max)  # normalize
 
             r_history.append(r_delta7)
+            # r_history[:, t, :].copy_(r_delta7)
 
+        # return r_history, bump_history
         return torch.stack(r_history, dim=1), torch.stack(bump_history, dim=1)
 
 def train(num_neurons=120, seq_len=120, action_dim=2, training_steps=1000, learning_rate=1e-3, batch_size=128):
