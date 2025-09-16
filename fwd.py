@@ -2,7 +2,24 @@ import torch
 import torch.nn as nn
 from generate_av_integration_data import AVIntegrationDataset
 
+from torch.utils.cpp_extension import load
+import pathlib
+import os
+
+if not torch.cuda.is_available():
+    raise RuntimeError("CUDA is not available")
+
+capability = torch.cuda.get_device_capability(torch.cuda.current_device())
+name = torch.cuda.get_device_name(torch.cuda.current_device())
+
+if capability[0] < 8:
+    raise RuntimeError(f"GPU compute capability {capability[0]}.{capability[1]} is below minimum required (8.0)")
+
+os.environ["TORCH_CUDA_ARCH_LIST"] = f"{capability[0]}.{capability[1]}"
+print(f"GPU: {name}, compute capability: {capability[0]}.{capability[1]}")
+
 torch.manual_seed(42)
+torch.set_printoptions(linewidth=200)
 
 def non_linear(x, activation_name):
     if activation_name == 'tanh':
@@ -106,9 +123,40 @@ def av_to_action_signal_ND(av_signal, action_dim=2):
     
     return action_signal
 
+dir_path = pathlib.Path(__file__).parent.absolute()
+print(f"dir_path: {dir_path}")
+
+force_rebuild = False
+build_dir = f"{dir_path}/build"
+
+build_path = pathlib.Path(build_dir)
+build_path.mkdir(parents=True, exist_ok=True)
+if force_rebuild:
+    for file in build_path.glob("*"):
+        file.unlink()
+
+module = load(
+    name='torch_sum',
+    sources=[f"{dir_path}/cpp/torch_sum_kernel.cu", f"{dir_path}/cpp/torch_sum.cpp"],
+    # verbose=True,
+    build_directory=build_dir 
+)
+
+
+def torch_sum(A_t, Wa, Wa_weighted):
+
+    # Batch size = 1
+    A_t_expanded = A_t.unsqueeze(-1).unsqueeze(-1)
+    Wa_weighted.copy_(torch.sum(A_t_expanded * Wa.unsqueeze(0), dim=1))
+
 def process_ring_attractor_sequence(action_signal, r, J0, J1, Wo, Wa, W_delta7, activation_name, Wa_weighted, recurrent_input, r_delta7):
     """Process entire sequence of ring attractor dynamics.
     
+    N = 256
+    seq_len = 128
+    batch_size = 64
+    a_dim = 32
+
     Unchanged in for-loop:
     - action_signal: torch.Size([64, 128, 32])  # input sequence
     - J0: torch.Size([256, 256])                # baseline connectivity
@@ -154,8 +202,11 @@ def process_ring_attractor_sequence(action_signal, r, J0, J1, Wo, Wa, W_delta7, 
         A_t = A[:, t, :]  # (batch, action_dim)
 
         # Compute weighted sum of action matrices
-        A_t_expanded = A_t.unsqueeze(-1).unsqueeze(-1)
-        Wa_weighted.copy_(torch.sum(A_t_expanded * Wa.unsqueeze(0), dim=1))
+        # A_t_expanded = A_t.unsqueeze(-1).unsqueeze(-1)
+        # Wa_weighted.copy_(torch.sum(A_t_expanded * Wa.unsqueeze(0), dim=1))
+
+        # torch_sum(A_t, Wa, Wa_weighted)
+        module.torch_sum(A_t, Wa, Wa_weighted)
 
         # Effective weight matrix
         W_eff = J0 + J1 * Wo + Wa_weighted
@@ -187,28 +238,6 @@ class GeneralizedRingAttractorNoGain(nn.Module):
     where A is an action vector of dimension k, and Wa is a tensor of shape (k, N, N)
 
     This version directly uses action signals without any gain modulation.
-
-    1️⃣ Constant Variables (fixed during the loop)
-    Variable	Shape	Comments
-    self.J0	    (256, 256)	Fixed recurrent connectivity
-    self.J1	    ()	Scalar constant
-    self.Wo	    (256, 256)	Learnable but fixed per forward pass
-    self.Wa	    (32, 256, 256)	Learnable action matrices
-    self.W_delta7	(256, 256)	Fixed buffer
-    alpha	    ()	Scalar constant 0.15
-    self.activation_name	str	String specifying non-linearity
-    2️⃣ Changing Variables (update every iteration of t)
-    Variable	        Shape	Comments
-    A_t = A[:, t, :]	(64, 32)	Action vector at time t
-    A_t_expanded 	(64, 32, 256, 256)	For weighted sum computation
-    Wa_weighted	    (64, 256, 256)	Weighted sum of action matrices
-    W_eff	        (64, 256, 256)	Effective weight matrix at time t
-    r	            (64, 256)	Neural state vector (updated each step)
-    recurrent_input	(64, 256)	Input after W_eff multiplication and non-linearity
-    r_delta7	    (64, 256)	Cosine-transformed output
-    r_max	        (64, 1)	Max for normalization
-    r_history (after stacking)	    (64, 128, 256)	Stored outputs over the sequence
-    bump_history (after stacking)	(64, 128, 256)	Stored raw neural states
 
     Step 1: Take batch 0
     A_t[0,0] = 0.5, A_t[0,1] = 1.0
@@ -388,13 +417,16 @@ if __name__ == "__main__":
     seq_len = 128
     action_dim = 32
 
-    training_steps = 1000
+    training_steps = 10
     learning_rate = 1e-3
-    batch_size = 64
+    batch_size = 1
 
     with torch.no_grad():
 
         predicted_cosine_wave, bump_activity = fwd(num_neurons=num_neurons, seq_len=seq_len, action_dim=action_dim, training_steps=training_steps, learning_rate=learning_rate, batch_size=batch_size)
 
-    print("predicted_cosine_wave: ", predicted_cosine_wave[0][0][:10])
-    print("bump_activity: ", bump_activity[0][0][:10])
+    print("predicted_cosine_wave: ")
+    print(predicted_cosine_wave[0][0][:10])
+
+    print("bump_activity: ")
+    print(bump_activity[0][0][:10])
