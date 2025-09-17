@@ -27,7 +27,7 @@ def non_linear(x, activation_name):
     elif activation_name == 'relu':
         return torch.relu(x)
     elif activation_name == 'gelu':
-        return torch.nn.functional.gelu(x)
+        return torch.nn.functional.gelu(x, approximate='tanh')
     else:
         raise ValueError(f"Activation function {activation_name} not supported")
 
@@ -138,7 +138,7 @@ if force_rebuild:
 module = load(
     name='torch_sum',
     sources=[f"{dir_path}/cpp/torch_sum_kernel.cu", f"{dir_path}/cpp/torch_sum.cpp"],
-    # verbose=True,
+    verbose=True,
     build_directory=build_dir 
 )
 
@@ -205,8 +205,16 @@ def process_ring_attractor_sequence(action_signal, r, J0, J1, Wo, Wa, W_delta7, 
         # A_t_expanded = A_t.unsqueeze(-1).unsqueeze(-1)
         # Wa_weighted.copy_(torch.sum(A_t_expanded * Wa.unsqueeze(0), dim=1))
 
-        # torch_sum(A_t, Wa, Wa_weighted)
-        module.torch_sum(A_t, Wa, Wa_weighted)
+        torch_sum(A_t, Wa, Wa_weighted)
+        # module.torch_sum(A_t, Wa, Wa_weighted)
+
+        # module.torch_sum(A_t, 
+        #                  Wa,
+        #                  J0,
+        #                  J1,
+        #                  r,
+        #                  Wo, 
+        #                  Wa_weighted)
 
         # Effective weight matrix
         W_eff = J0 + J1 * Wo + Wa_weighted
@@ -226,6 +234,42 @@ def process_ring_attractor_sequence(action_signal, r, J0, J1, Wo, Wa, W_delta7, 
         r_max = r_delta7.max(dim=1, keepdim=True)[0]
         r_delta7.div_(r_max)  # normalize
 
+        r_history.append(r_delta7)
+
+    return torch.stack(r_history, dim=1), torch.stack(bump_history, dim=1)
+
+def process_ring_attractor_sequence_cuda(action_signal, r, J0, J1, Wo, Wa, W_delta7, activation_name, Wa_weighted, recurrent_input, r_delta7):
+    batch_size, seq_len, action_dim = action_signal.shape
+    bump_history = []
+    r_history = []
+    A = action_signal  # (batch, seq, action_dim)
+    for t in range(seq_len):
+        # Get action vector at time t
+        A_t = A[:, t, :]  # (batch, action_dim)
+        # A_t_expanded = A_t.unsqueeze(-1).unsqueeze(-1)
+        # Wa_weighted.copy_(torch.sum(A_t_expanded * Wa.unsqueeze(0), dim=1))
+
+        # torch_sum(A_t, Wa, Wa_weighted)
+        module.torch_sum(A_t, Wa, Wa_weighted)
+
+        # module.torch_sum(A_t, 
+        #                  Wa,
+        #                  J0,
+        #                  J1,
+        #                  r,
+        #                  Wo, 
+        #                  Wa_weighted)
+
+        W_eff = J0 + J1 * Wo + Wa_weighted
+
+        recurrent_input.copy_((W_eff @ r.unsqueeze(2)).squeeze(2))
+        recurrent_input = non_linear(recurrent_input, activation_name)
+        alpha = 0.15
+        r = r * (1 - alpha) + recurrent_input * alpha
+        bump_history.append(r)
+        r_delta7.copy_(r @ W_delta7)
+        r_max = r_delta7.max(dim=1, keepdim=True)[0]
+        r_delta7.div_(r_max)  # normalize
         r_history.append(r_delta7)
 
     return torch.stack(r_history, dim=1), torch.stack(bump_history, dim=1)
@@ -330,7 +374,7 @@ class GeneralizedRingAttractorNoGain(nn.Module):
                        dtype=torch.bfloat16) / self.num_neurons ** 0.5)
 
 
-    def forward(self, action_signal, r_init=None):
+    def forward(self, action_signal, r_init=None, ref=True):
         """
         Pre-allocates memory for tensors to reduce GPU memory fragmentation.
         """
@@ -366,10 +410,13 @@ class GeneralizedRingAttractorNoGain(nn.Module):
 
         # r_history[:, t, :].copy_(r_delta7)
 
-        return process_ring_attractor_sequence(action_signal, r, self.J0, self.J1, self.Wo, self.Wa, self.W_delta7, self.activation_name, Wa_weighted, recurrent_input, r_delta7)
+        if ref:
+            return process_ring_attractor_sequence(action_signal, r, self.J0, self.J1, self.Wo, self.Wa, self.W_delta7, self.activation_name, Wa_weighted, recurrent_input, r_delta7)
+        else:
+            return process_ring_attractor_sequence_cuda(action_signal, r, self.J0, self.J1, self.Wo, self.Wa, self.W_delta7, self.activation_name, Wa_weighted, recurrent_input, r_delta7)            
         
 
-def fwd(num_neurons=120, seq_len=120, action_dim=2, training_steps=1000, learning_rate=1e-3, batch_size=128):
+def fwd(num_neurons=120, seq_len=120, action_dim=2, training_steps=1000, learning_rate=1e-3, batch_size=128, ref=True):
     assert torch.cuda.is_available(), "CUDA GPU not detected. Exiting."
     device = torch.device("cuda")
     
@@ -407,11 +454,14 @@ def fwd(num_neurons=120, seq_len=120, action_dim=2, training_steps=1000, learnin
     r_init = create_initial_bump(initial_angle, num_neurons, device=device)
 
     # Forward pass
-    predicted_cosine_wave, bump_activity = ring_rnn(action_signal, r_init=r_init)
+    predicted_cosine_wave, bump_activity = ring_rnn(action_signal, r_init=r_init, ref=ref)
 
     return predicted_cosine_wave, bump_activity
 
 if __name__ == "__main__":
+
+    from model_bf16 import fwd as fwd_ref
+
     # --- Training Parameters ---
     num_neurons = 256
     seq_len = 128
@@ -423,10 +473,20 @@ if __name__ == "__main__":
 
     with torch.no_grad():
 
-        predicted_cosine_wave, bump_activity = fwd(num_neurons=num_neurons, seq_len=seq_len, action_dim=action_dim, training_steps=training_steps, learning_rate=learning_rate, batch_size=batch_size)
+        predicted_cosine_wave, bump_activity = fwd_ref(num_neurons=num_neurons, seq_len=seq_len, action_dim=action_dim, training_steps=training_steps, learning_rate=learning_rate, batch_size=batch_size)
 
-    print("predicted_cosine_wave: ")
-    print(predicted_cosine_wave[0][0][:10])
+        print("cosine_wave ref: ")
+        print(predicted_cosine_wave[0][0][:10])
 
-    print("bump_activity: ")
-    print(bump_activity[0][0][:10])
+        print("bump_activity ref: ")
+        print(bump_activity[0][0][:10])
+
+        # predicted_cosine_wave, bump_activity = fwd(num_neurons=num_neurons, seq_len=seq_len, action_dim=action_dim, training_steps=training_steps, learning_rate=learning_rate, batch_size=batch_size, ref=False)   
+
+        # print("cosine_wave mine: ")
+        # print(predicted_cosine_wave[0][0][:10])
+
+        # print("bump_activity mine: ")
+        # print(bump_activity[0][0][:10])
+
+

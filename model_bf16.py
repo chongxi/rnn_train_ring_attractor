@@ -3,13 +3,17 @@ import torch.nn as nn
 
 from generate_av_integration_data import AVIntegrationDataset
 
+torch.manual_seed(42)
+torch.set_printoptions(linewidth=200)
+
 def non_linear(x, activation_name):
     if activation_name == 'tanh':
         return torch.tanh(x)
     elif activation_name == 'relu':
         return torch.relu(x)
     elif activation_name == 'gelu':
-        return torch.nn.functional.gelu(x)
+        # return torch.nn.functional.gelu(x)
+        return torch.nn.functional.gelu(x, approximate='tanh')
     else:
         raise ValueError(f"Activation function {activation_name} not supported")
 
@@ -294,6 +298,47 @@ def train(num_neurons=120, seq_len=120, action_dim=2, training_steps=1000, learn
     
     print("Training finished.")
 
+def fwd(num_neurons=120, seq_len=120, action_dim=2, training_steps=1000, learning_rate=1e-3, batch_size=128):
+    assert torch.cuda.is_available(), "CUDA GPU not detected. Exiting."
+    device = torch.device("cuda")
+    
+    # Set default dtype to bfloat16
+    torch.set_default_dtype(torch.bfloat16)
+
+    # Create dataset for training data generation
+    dataset = AVIntegrationDataset(
+        num_samples=training_steps * batch_size,
+        seq_len=seq_len,
+        zero_padding_start_ratio=0.1,
+        zero_ratios_in_rest=[0.2, 0.5, 0.8],
+        device=device,
+        fast_mode=True
+    )
+
+    # Model setup with bfloat16
+    ring_rnn = GeneralizedRingAttractorNoGain(
+        num_neurons=num_neurons,
+        action_dim=action_dim,
+        tau=10,
+        dt=1,
+        activation='gelu',
+        initialization='random'
+    )
+    ring_rnn.to(device)
+
+    av_signal, target_angle = dataset.generate_batch(batch_size)
+
+    # Convert angular velocity to action signals [L, R]
+    action_signal = av_to_action_signal_ND(av_signal, action_dim)  # Always 2D for this task
+
+    initial_angle = target_angle[:, 0]
+
+    r_init = create_initial_bump(initial_angle, num_neurons, device=device)
+
+    # Forward pass
+    predicted_cosine_wave, bump_activity = ring_rnn(action_signal, r_init=r_init)
+
+    return predicted_cosine_wave, bump_activity
 
 if __name__ == "__main__":
     # --- Training Parameters ---
@@ -301,8 +346,30 @@ if __name__ == "__main__":
     seq_len = 128
     action_dim = 32
 
-    training_steps = 1000
+    training_steps = 10
     learning_rate = 1e-3
-    batch_size = 64
+    batch_size = 1
 
-    train(num_neurons=num_neurons, seq_len=seq_len, action_dim=action_dim, training_steps=training_steps, learning_rate=learning_rate, batch_size=batch_size)
+    with torch.no_grad():
+
+        predicted_cosine_wave, bump_activity = fwd(num_neurons=num_neurons, seq_len=seq_len, action_dim=action_dim, training_steps=training_steps, learning_rate=learning_rate, batch_size=batch_size)
+
+        print("cosine_wave ref: ")
+        print(predicted_cosine_wave[0][0][:10])
+
+        print("bump_activity ref: ")
+        print(bump_activity[0][0][:10])
+
+
+
+# if __name__ == "__main__":
+#     # --- Training Parameters ---
+#     num_neurons = 256
+#     seq_len = 128
+#     action_dim = 32
+
+#     training_steps = 1000
+#     learning_rate = 1e-3
+#     batch_size = 64
+
+#     train(num_neurons=num_neurons, seq_len=seq_len, action_dim=action_dim, training_steps=training_steps, learning_rate=learning_rate, batch_size=batch_size)
