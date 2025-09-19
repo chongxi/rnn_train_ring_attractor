@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from generate_av_integration_data import AVIntegrationDataset
 from model_bf16 import GeneralizedRingAttractorNoGain_ref
-torch.manual_seed(42)
+
 torch.set_printoptions(linewidth=200)
 
 #################################################################################################
@@ -46,6 +46,19 @@ module = load(
     verbose=True,
     build_directory=build_dir 
 )
+
+import random
+import numpy as np
+
+def set_seed(seed=42):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+
+# set_seed(42)
 
 #################################################################################################
 #################################################################################################
@@ -217,10 +230,10 @@ def process_ring_attractor_sequence(action_signal, r, J0, J1, Wo, Wa, W_delta7, 
         A_t = A[:, t, :]  # (batch, action_dim)
 
         # Compute weighted sum of action matrices
-        # A_t_expanded = A_t.unsqueeze(-1).unsqueeze(-1)
-        # Wa_weighted.copy_(torch.sum(A_t_expanded * Wa.unsqueeze(0), dim=1))
+        A_t_expanded = A_t.unsqueeze(-1).unsqueeze(-1)
+        Wa_weighted.copy_(torch.sum(A_t_expanded * Wa.unsqueeze(0), dim=1))
 
-        torch_sum(A_t, Wa, Wa_weighted)
+        # torch_sum(A_t, Wa, Wa_weighted)
 
         W_eff = J0 + J1 * Wo + Wa_weighted
 
@@ -234,10 +247,14 @@ def process_ring_attractor_sequence(action_signal, r, J0, J1, Wo, Wa, W_delta7, 
 
         bump_history.append(r)
 
-        # Transform to cosine wave for output
-        r_delta7.copy_(r @ W_delta7)
+        # # Transform to cosine wave for output
+        # r_delta7.copy_(r @ W_delta7)
+        # r_max = r_delta7.max(dim=1, keepdim=True)[0]
+        # r_delta7.div_(r_max)  # normalize
+
+        r_delta7 = r @ W_delta7
         r_max = r_delta7.max(dim=1, keepdim=True)[0]
-        r_delta7.div_(r_max)  # normalize
+        r_delta7 = r_delta7 / r_max
 
         r_history.append(r_delta7)
 
@@ -272,9 +289,16 @@ def process_ring_attractor_sequence_cuda(action_signal, r, J0, J1, Wo, Wa, W_del
         alpha = 0.15
         r = r * (1 - alpha) + recurrent_input * alpha
         bump_history.append(r)
-        r_delta7.copy_(r @ W_delta7)
+
+
+        # r_delta7.copy_(r @ W_delta7)
+        # r_max = r_delta7.max(dim=1, keepdim=True)[0]
+        # r_delta7.div_(r_max)  # normalize
+
+        r_delta7 = r @ W_delta7
         r_max = r_delta7.max(dim=1, keepdim=True)[0]
-        r_delta7.div_(r_max)  # normalize
+        r_delta7 = r_delta7 / r_max
+
         r_history.append(r_delta7)
 
     return torch.stack(r_history, dim=1), torch.stack(bump_history, dim=1)
@@ -379,7 +403,7 @@ class GeneralizedRingAttractorNoGain(nn.Module):
                        dtype=torch.bfloat16) / self.num_neurons ** 0.5)
 
 
-    def forward(self, action_signal, r_init_bf16=None, ref=True):
+    def forward(self, action_signal, r_init=None, ref=True):
         """
         Pre-allocates memory for tensors to reduce GPU memory fragmentation.
         """
@@ -392,11 +416,11 @@ class GeneralizedRingAttractorNoGain(nn.Module):
         N = self.num_neurons
 
         # Initialize r
-        if r_init_bf16 is None:
+        if r_init is None:
             initial_angle = torch.full((batch_size,), torch.pi, device=self.Wo.device)
             r = create_initial_bump(initial_angle, N, device=self.Wo.device)
         else:
-            r = r_init_bf16
+            r = r_init
 
         bump_history = []
         r_history = []
@@ -416,9 +440,9 @@ class GeneralizedRingAttractorNoGain(nn.Module):
         # r_history[:, t, :].copy_(r_delta7)
 
 
-        return process_ring_attractor_sequence(action_signal, r, self.J0, self.J1, self.Wo, self.Wa, self.W_delta7, self.activation_name, Wa_weighted, recurrent_input, r_delta7)
+        # return process_ring_attractor_sequence(action_signal, r, self.J0, self.J1, self.Wo, self.Wa, self.W_delta7, self.activation_name, Wa_weighted, recurrent_input, r_delta7)
         # else:
-        #     return process_ring_attractor_sequence_cuda(action_signal, r, self.J0, self.J1, self.Wo, self.Wa, self.W_delta7, self.activation_name, Wa_weighted, recurrent_input, r_delta7)            
+        return process_ring_attractor_sequence_cuda(action_signal, r, self.J0, self.J1, self.Wo, self.Wa, self.W_delta7, self.activation_name, Wa_weighted, recurrent_input, r_delta7)       
         
 
 def benchmark(num_neurons=120, seq_len=120, action_dim=2, batch_size=32):
@@ -437,7 +461,8 @@ def benchmark(num_neurons=120, seq_len=120, action_dim=2, batch_size=32):
         fast_mode=True
     )
 
-    # Model setup with bfloat16
+    set_seed(42)
+
     ring_rnn = GeneralizedRingAttractorNoGain(
         num_neurons=num_neurons,
         action_dim=action_dim,
@@ -449,6 +474,11 @@ def benchmark(num_neurons=120, seq_len=120, action_dim=2, batch_size=32):
     )
 
     ring_rnn.to(device)
+    ring_rnn.eval()
+    for param in ring_rnn.parameters():
+        param.requires_grad = False
+
+    set_seed(42)
 
     ring_rnn_ref = GeneralizedRingAttractorNoGain_ref(
         num_neurons=num_neurons,
@@ -461,6 +491,9 @@ def benchmark(num_neurons=120, seq_len=120, action_dim=2, batch_size=32):
     )
 
     ring_rnn_ref.to(device)
+    ring_rnn_ref.eval()
+    for param in ring_rnn_ref.parameters():
+        param.requires_grad = False
 
     print("--------------- Model params ----------------------")
 
@@ -487,12 +520,42 @@ def benchmark(num_neurons=120, seq_len=120, action_dim=2, batch_size=32):
     print("r_init_bf16:", r_init_bf16.shape, r_init_bf16.dtype, r_init_bf16.device)
     print("initial_angle:", initial_angle_bf16.shape, initial_angle_bf16.dtype, initial_angle_bf16.device)
 
-    print("--------------- Inference ----------------------")
+    
 
     # Forward pass
-    predicted_cosine_wave, bump_activity = ring_rnn(av_signal_bf16, r_init=r_init_bf16)
 
-    # return predicted_cosine_wave, bump_activity
+    predicted_cosine_wave, bump_activity = ring_rnn(av_signal_bf16, r_init=r_init_bf16)
+    predicted_cosine_wave_ref, bump_activity_ref = ring_rnn_ref(av_signal_bf16, r_init=r_init_bf16)
+    
+    print("--------------- Check correctness ----------------------")
+
+    def check_tensor_match(tensor1, tensor2, name, rtol=1e-5, atol=1e-8, max_print=10):
+        """Check if two tensors match within tolerance and print mismatches."""
+        if not torch.allclose(tensor1, tensor2, rtol=rtol, atol=atol):
+            print(f"\n{name} differences:")
+            diff = (tensor1 - tensor2).abs()
+            mismatch = ~torch.isclose(tensor1, tensor2, rtol=rtol, atol=atol)
+            num_mismatched = mismatch.sum().item()
+            indices = torch.nonzero(mismatch)[:max_print]
+            
+            print("Mismatch at                 ref         impl        diff")
+            print("--------------------------------------------------------")
+            for idx in indices:
+                b, t, n = idx
+                print(f"[batch={b:2d},t={t:3d},n={n:3d}]: {tensor2[b,t,n]:10.6f} {tensor1[b,t,n]:10.6f} {diff[b,t,n]:10.6f}")
+            
+            if num_mismatched > max_print:
+                print("...")
+            print(f"Total mismatched elements: {num_mismatched} out of {tensor1.numel()}")
+            return False
+        else:
+            print(f"{name} match!")
+            return True
+
+    # Check both tensors
+    check_tensor_match(predicted_cosine_wave, predicted_cosine_wave_ref, "Cosine waves")
+    # check_tensor_match(predicted_cosine_wave, predicted_cosine_wave_ref, "Cosine waves", rtol=0.1, atol=0.01)
+    check_tensor_match(bump_activity, bump_activity_ref, "Bump activities")
 
 if __name__ == "__main__":
 
@@ -505,36 +568,6 @@ if __name__ == "__main__":
     learning_rate = 1e-3
     batch_size = 1
 
-    with torch.no_grad():
-
-        # predicted_cosine_wave, bump_activity = fwd_ref(num_neurons=num_neurons, seq_len=seq_len, action_dim=action_dim, training_steps=training_steps, learning_rate=learning_rate, batch_size=batch_size)
-
-        # print("cosine_wave ref: ")
-        # print(predicted_cosine_wave[0][0][:10])
-
-        # print("bump_activity ref: ")
-        # print(bump_activity[0][0][:10])
-
-        # predicted_cosine_wave, bump_activity = benchmark(num_neurons=num_neurons, seq_len=seq_len, action_dim=action_dim, batch_size=batch_size)  
-
-        benchmark(num_neurons=num_neurons, seq_len=seq_len, action_dim=action_dim, batch_size=batch_size) 
-
-        # print("cosine_wave mine: ")
-        # print(predicted_cosine_wave[0][0][:10])
-
-        # print("bump_activity mine: ")
-        # print(bump_activity[0][0][:10])
-
-    # Run benchmarks
-    # results = benchmark_fwd(num_trials=10)
-    
-    # print("\n=== Benchmark Results ===")
-    # print(f"Reference Implementation: {results['reference_mean_ms']:.2f} ± {results['reference_std_ms']:.2f} ms")
-    # print(f"CUDA Implementation: {results['cuda_mean_ms']:.2f} ± {results['cuda_std_ms']:.2f} ms")
-    # print(f"Speedup: {results['speedup']:.2f}x")
-    # print(f"Maximum Error: {results['max_difference']:.2e}")
-    
-    # if results['max_difference'] > 1e-3:
-    #     print("\nWARNING: Large difference between implementations detected!")
+    benchmark(num_neurons=num_neurons, seq_len=seq_len, action_dim=action_dim, batch_size=batch_size) 
 
 

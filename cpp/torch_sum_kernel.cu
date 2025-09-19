@@ -148,13 +148,15 @@ __global__ void torch_sum_kernel(
     //     Wa_weighted[row_idx * N + col_idx] = Wa[][row_idx][col_idx]
 
     // } // end for t
-    __nv_bfloat16 accum = CUDART_ZERO_BF16;
+    // __nv_bfloat16 accum = CUDART_ZERO_BF16;
+    float accum = 0.f;
 
     for (int action_idx = 0; action_idx < a_dim; ++action_idx){
-        accum += A_t[action_idx] * Wa[action_idx * N * N + row_idx * N + col_idx];
+        __nv_bfloat16 accum_temp = A_t[action_idx] * Wa[action_idx * N * N + row_idx * N + col_idx];
+        accum += __bfloat162float(accum_temp);
     } // end for action_idx
 
-    Wa_weighted[row_idx * N + col_idx] = accum;
+    Wa_weighted[row_idx * N + col_idx] = __float2bfloat16(accum);
 }
 
 void torch_sum_cuda(

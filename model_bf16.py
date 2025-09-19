@@ -3,7 +3,19 @@ import torch.nn as nn
 
 from generate_av_integration_data import AVIntegrationDataset
 
-torch.manual_seed(42)
+import random
+import numpy as np
+
+def set_seed(seed=42):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+
+set_seed()
+
 torch.set_printoptions(linewidth=200)
 
 def non_linear(x, activation_name):
@@ -210,166 +222,3 @@ class GeneralizedRingAttractorNoGain_ref(nn.Module):
             r_history.append(r_delta7)
 
         return torch.stack(r_history, dim=1), torch.stack(bump_history, dim=1)
-
-# def train(num_neurons=120, seq_len=120, action_dim=2, training_steps=1000, learning_rate=1e-3, batch_size=128):
-#     assert torch.cuda.is_available(), "CUDA GPU not detected. Exiting."
-#     device = torch.device("cuda")
-    
-#     # Set default dtype to bfloat16
-#     torch.set_default_dtype(torch.bfloat16)
-
-#     # Create dataset for training data generation
-#     dataset = AVIntegrationDataset(
-#         num_samples=training_steps * batch_size,
-#         seq_len=seq_len,
-#         zero_padding_start_ratio=0.1,
-#         zero_ratios_in_rest=[0.2, 0.5, 0.8],
-#         device=device,
-#         fast_mode=True
-#     )
-
-#     # Model setup with bfloat16
-#     ring_rnn = GeneralizedRingAttractorNoGain_ref(
-#         num_neurons=num_neurons,
-#         action_dim=action_dim,
-#         tau=10,
-#         dt=1,
-#         activation='gelu',
-#         initialization='random'
-#     )
-#     ring_rnn.to(device)
-
-#     # Optimizer
-#     optimizer = torch.optim.Adam(ring_rnn.parameters(), lr=learning_rate)
-
-#     # Benchmark:
-#     start = torch.cuda.Event(enable_timing=True)
-#     end = torch.cuda.Event(enable_timing=True)
-
-#     # --- TRAINING LOOP ---
-#     print("\nStarting training with on-demand data generation...")
-#     loss_history = []
-#     bump_loss_history = []
-
-#     for step in range(training_steps):
-
-#         if step % 10 == 0:
-#             start.record()
-
-#         # Generate data
-#         # av_signal.shape = torch.Size([128, 120]), target_angle.shape = torch.Size([128, 120])
-#         av_signal, target_angle = dataset.generate_batch(batch_size)
-
-#         # Convert angular velocity to action signals [L, R]
-#         action_signal = av_to_action_signal_ND(av_signal, action_dim)  # Always 2D for this task
-
-
-#         initial_angle = target_angle[:, 0]
-
-#         r_init = create_initial_bump(initial_angle, num_neurons, device=device)
-
-
-#         # Forward pass
-#         predicted_cosine_wave, bump_activity = ring_rnn(action_signal, r_init=r_init)
-
-#         # Calculate losses
-#         loss = cosine_similarity_loss(predicted_cosine_wave, target_angle)
-#         bump_loss = bump_amplitude_loss(bump_activity)
-
-#         total_loss = loss + 0.2 * bump_loss
-
-#         # Backward pass and optimization
-#         optimizer.zero_grad()
-#         total_loss.backward()
-#         torch.nn.utils.clip_grad_norm_(ring_rnn.parameters(), 1.0)
-#         optimizer.step()
-
-#         loss_history.append(total_loss.item())
-#         bump_loss_history.append(bump_loss.item())
-
-#         if step % 10 == 9:
-#             end.record()
-#             torch.cuda.synchronize()
-
-#             print(f"Step {step + 1}/{training_steps}, Total Loss: {total_loss.item():.4f}, "
-#                   f"Main loss: {loss.item():.4f}, "
-#                   f"Bump loss: {bump_loss.item():.4f}, "
-#                   f"Avg latency: {(start.elapsed_time(end) / 10):.3f} ms")
-    
-#     print("Training finished.")
-
-# def fwd(num_neurons=120, seq_len=120, action_dim=2, training_steps=1000, learning_rate=1e-3, batch_size=128):
-#     assert torch.cuda.is_available(), "CUDA GPU not detected. Exiting."
-#     device = torch.device("cuda")
-    
-#     # Set default dtype to bfloat16
-#     torch.set_default_dtype(torch.bfloat16)
-
-#     # Create dataset for training data generation
-#     dataset = AVIntegrationDataset(
-#         num_samples=training_steps * batch_size,
-#         seq_len=seq_len,
-#         zero_padding_start_ratio=0.1,
-#         zero_ratios_in_rest=[0.2, 0.5, 0.8],
-#         device=device,
-#         fast_mode=True
-#     )
-
-#     # Model setup with bfloat16
-#     ring_rnn = GeneralizedRingAttractorNoGain(
-#         num_neurons=num_neurons,
-#         action_dim=action_dim,
-#         tau=10,
-#         dt=1,
-#         activation='gelu',
-#         initialization='random'
-#     )
-#     ring_rnn.to(device)
-
-#     av_signal, target_angle = dataset.generate_batch(batch_size)
-
-#     # Convert angular velocity to action signals [L, R]
-#     action_signal = av_to_action_signal_ND(av_signal, action_dim)  # Always 2D for this task
-
-#     initial_angle = target_angle[:, 0]
-
-#     r_init = create_initial_bump(initial_angle, num_neurons, device=device)
-
-#     # Forward pass
-#     predicted_cosine_wave, bump_activity = ring_rnn(action_signal, r_init=r_init)
-
-#     return predicted_cosine_wave, bump_activity
-
-# if __name__ == "__main__":
-#     # --- Training Parameters ---
-#     num_neurons = 256
-#     seq_len = 128
-#     action_dim = 32
-
-#     training_steps = 10
-#     learning_rate = 1e-3
-#     batch_size = 1
-
-#     with torch.no_grad():
-
-#         predicted_cosine_wave, bump_activity = fwd(num_neurons=num_neurons, seq_len=seq_len, action_dim=action_dim, training_steps=training_steps, learning_rate=learning_rate, batch_size=batch_size)
-
-#         print("cosine_wave ref: ")
-#         print(predicted_cosine_wave[0][0][:10])
-
-#         print("bump_activity ref: ")
-#         print(bump_activity[0][0][:10])
-
-
-
-# if __name__ == "__main__":
-#     # --- Training Parameters ---
-#     num_neurons = 256
-#     seq_len = 128
-#     action_dim = 32
-
-#     training_steps = 1000
-#     learning_rate = 1e-3
-#     batch_size = 64
-
-#     train(num_neurons=num_neurons, seq_len=seq_len, action_dim=action_dim, training_steps=training_steps, learning_rate=learning_rate, batch_size=batch_size)
