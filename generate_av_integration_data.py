@@ -143,7 +143,7 @@ class AVIntegrationDataset(Dataset):
         self.zero_ratios_tensor = torch.tensor(self.zero_ratios_in_rest, device=self.device)
         
         # PRE-GENERATE ALL DATA USING CHUNKED ULTRA-FAST METHOD
-        print(f"Pre-generating {num_samples} samples using ultra-fast chunked generation...")
+        # print(f"Pre-generating {num_samples} samples using ultra-fast chunked generation...")
         start_time = time.time()
         
         self.av_data, self.angle_data = generate_av_integration_data_chunked(
@@ -152,8 +152,8 @@ class AVIntegrationDataset(Dataset):
         )
         
         generation_time = time.time() - start_time
-        print(f"Total data generation completed in {generation_time:.2f} seconds")
-        print(f"Generation speed: {num_samples/generation_time:.0f} samples/second")
+        # print(f"Total data generation completed in {generation_time:.2f} seconds")
+        # print(f"Generation speed: {num_samples/generation_time:.0f} samples/second")
         
         # For batch generation, keep track of a shuffled index to avoid always returning the same batches
         self.current_index = 0

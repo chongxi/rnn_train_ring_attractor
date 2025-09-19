@@ -1,14 +1,24 @@
 import torch
 import torch.nn as nn
 from generate_av_integration_data import AVIntegrationDataset
+from model_bf16 import GeneralizedRingAttractorNoGain_ref
+torch.manual_seed(42)
+torch.set_printoptions(linewidth=200)
+
+#################################################################################################
+############################################## CUDA #############################################
+#################################################################################################
 
 from torch.utils.cpp_extension import load
 import pathlib
 import os
 
-if not torch.cuda.is_available():
-    raise RuntimeError("CUDA is not available")
+print("========================================================") 
 
+if not torch.cuda.is_available():
+    raise RuntimeError("CUDA is not found")
+
+force_rebuild = False
 capability = torch.cuda.get_device_capability(torch.cuda.current_device())
 name = torch.cuda.get_device_name(torch.cuda.current_device())
 
@@ -18,8 +28,30 @@ if capability[0] < 8:
 os.environ["TORCH_CUDA_ARCH_LIST"] = f"{capability[0]}.{capability[1]}"
 print(f"GPU: {name}, compute capability: {capability[0]}.{capability[1]}")
 
-torch.manual_seed(42)
-torch.set_printoptions(linewidth=200)
+dir_path = pathlib.Path(__file__).parent.absolute()
+print(f"dir_path: {dir_path}")
+
+
+build_dir = f"{dir_path}/build"
+
+build_path = pathlib.Path(build_dir)
+build_path.mkdir(parents=True, exist_ok=True)
+if force_rebuild:
+    for file in build_path.glob("*"):
+        file.unlink()
+
+module = load(
+    name='torch_sum',
+    sources=[f"{dir_path}/cpp/torch_sum_kernel.cu", f"{dir_path}/cpp/torch_sum.cpp"],
+    verbose=True,
+    build_directory=build_dir 
+)
+
+#################################################################################################
+#################################################################################################
+#################################################################################################
+
+
 
 def non_linear(x, activation_name):
     if activation_name == 'tanh':
@@ -123,24 +155,7 @@ def av_to_action_signal_ND(av_signal, action_dim=2):
     
     return action_signal
 
-dir_path = pathlib.Path(__file__).parent.absolute()
-print(f"dir_path: {dir_path}")
 
-force_rebuild = False
-build_dir = f"{dir_path}/build"
-
-build_path = pathlib.Path(build_dir)
-build_path.mkdir(parents=True, exist_ok=True)
-if force_rebuild:
-    for file in build_path.glob("*"):
-        file.unlink()
-
-module = load(
-    name='torch_sum',
-    sources=[f"{dir_path}/cpp/torch_sum_kernel.cu", f"{dir_path}/cpp/torch_sum.cpp"],
-    verbose=True,
-    build_directory=build_dir 
-)
 
 
 def torch_sum(A_t, Wa, Wa_weighted):
@@ -206,17 +221,7 @@ def process_ring_attractor_sequence(action_signal, r, J0, J1, Wo, Wa, W_delta7, 
         # Wa_weighted.copy_(torch.sum(A_t_expanded * Wa.unsqueeze(0), dim=1))
 
         torch_sum(A_t, Wa, Wa_weighted)
-        # module.torch_sum(A_t, Wa, Wa_weighted)
 
-        # module.torch_sum(A_t, 
-        #                  Wa,
-        #                  J0,
-        #                  J1,
-        #                  r,
-        #                  Wo, 
-        #                  Wa_weighted)
-
-        # Effective weight matrix
         W_eff = J0 + J1 * Wo + Wa_weighted
 
         # Recurrent dynamics
@@ -374,7 +379,7 @@ class GeneralizedRingAttractorNoGain(nn.Module):
                        dtype=torch.bfloat16) / self.num_neurons ** 0.5)
 
 
-    def forward(self, action_signal, r_init=None, ref=True):
+    def forward(self, action_signal, r_init_bf16=None, ref=True):
         """
         Pre-allocates memory for tensors to reduce GPU memory fragmentation.
         """
@@ -387,11 +392,11 @@ class GeneralizedRingAttractorNoGain(nn.Module):
         N = self.num_neurons
 
         # Initialize r
-        if r_init is None:
+        if r_init_bf16 is None:
             initial_angle = torch.full((batch_size,), torch.pi, device=self.Wo.device)
             r = create_initial_bump(initial_angle, N, device=self.Wo.device)
         else:
-            r = r_init
+            r = r_init_bf16
 
         bump_history = []
         r_history = []
@@ -410,18 +415,17 @@ class GeneralizedRingAttractorNoGain(nn.Module):
 
         # r_history[:, t, :].copy_(r_delta7)
 
-        if ref:
-            return process_ring_attractor_sequence(action_signal, r, self.J0, self.J1, self.Wo, self.Wa, self.W_delta7, self.activation_name, Wa_weighted, recurrent_input, r_delta7)
-        else:
-            return process_ring_attractor_sequence_cuda(action_signal, r, self.J0, self.J1, self.Wo, self.Wa, self.W_delta7, self.activation_name, Wa_weighted, recurrent_input, r_delta7)            
+
+        return process_ring_attractor_sequence(action_signal, r, self.J0, self.J1, self.Wo, self.Wa, self.W_delta7, self.activation_name, Wa_weighted, recurrent_input, r_delta7)
+        # else:
+        #     return process_ring_attractor_sequence_cuda(action_signal, r, self.J0, self.J1, self.Wo, self.Wa, self.W_delta7, self.activation_name, Wa_weighted, recurrent_input, r_delta7)            
         
 
-def fwd(num_neurons=120, seq_len=120, action_dim=2, training_steps=1000, learning_rate=1e-3, batch_size=128, ref=True):
+def benchmark(num_neurons=120, seq_len=120, action_dim=2, batch_size=32):
     assert torch.cuda.is_available(), "CUDA GPU not detected. Exiting."
     device = torch.device("cuda")
-    
-    # Set default dtype to bfloat16
-    torch.set_default_dtype(torch.bfloat16)
+
+    print("========================================================")    
 
     # Create dataset for training data generation
     dataset = AVIntegrationDataset(
@@ -440,27 +444,57 @@ def fwd(num_neurons=120, seq_len=120, action_dim=2, training_steps=1000, learnin
         tau=10,
         dt=1,
         activation='gelu',
-        initialization='random'
+        initialization='random',
+        device=device
     )
+
     ring_rnn.to(device)
+
+    ring_rnn_ref = GeneralizedRingAttractorNoGain_ref(
+        num_neurons=num_neurons,
+        action_dim=action_dim,
+        tau=10,
+        dt=1,
+        activation='gelu',
+        initialization='random',
+        device=device
+    )
+
+    ring_rnn_ref.to(device)
+
+    print("--------------- Model params ----------------------")
+
+    print("J0:", ring_rnn.J0.shape, ring_rnn.J0.dtype, ring_rnn.J0.device) 
+    print("W_delta7:", ring_rnn.W_delta7.shape, ring_rnn.W_delta7.dtype, ring_rnn.W_delta7.device)
+    print("Wo:", ring_rnn.Wo.shape, ring_rnn.Wo.dtype, ring_rnn.Wo.device)
+    print("Wa:", ring_rnn.Wa.shape, ring_rnn.Wa.dtype, ring_rnn.Wa.device)
+
+    print("--------------- Data params ----------------------")
 
     av_signal, target_angle = dataset.generate_batch(batch_size)
 
-    # Convert angular velocity to action signals [L, R]
-    action_signal = av_to_action_signal_ND(av_signal, action_dim)  # Always 2D for this task
+    av_signal_bf16 = av_signal.to(torch.bfloat16)
+    target_angle_bf16 = target_angle.to(torch.bfloat16)
 
-    initial_angle = target_angle[:, 0]
+    av_signal_bf16 = av_to_action_signal_ND(av_signal_bf16, action_dim)
+    initial_angle_bf16 = target_angle_bf16[:, 0]
+    r_init_bf16 = create_initial_bump(initial_angle_bf16, num_neurons, device=device)
 
-    r_init = create_initial_bump(initial_angle, num_neurons, device=device)
+
+
+    print("av_signal:", av_signal_bf16.shape, av_signal_bf16.dtype, av_signal_bf16.device)
+    print("target_angle:", target_angle_bf16.shape, target_angle_bf16.dtype, target_angle_bf16.device)
+    print("r_init_bf16:", r_init_bf16.shape, r_init_bf16.dtype, r_init_bf16.device)
+    print("initial_angle:", initial_angle_bf16.shape, initial_angle_bf16.dtype, initial_angle_bf16.device)
+
+    print("--------------- Inference ----------------------")
 
     # Forward pass
-    predicted_cosine_wave, bump_activity = ring_rnn(action_signal, r_init=r_init, ref=ref)
+    predicted_cosine_wave, bump_activity = ring_rnn(av_signal_bf16, r_init=r_init_bf16)
 
-    return predicted_cosine_wave, bump_activity
+    # return predicted_cosine_wave, bump_activity
 
 if __name__ == "__main__":
-
-    from model_bf16 import fwd as fwd_ref
 
     # --- Training Parameters ---
     num_neurons = 256
@@ -473,20 +507,34 @@ if __name__ == "__main__":
 
     with torch.no_grad():
 
-        predicted_cosine_wave, bump_activity = fwd_ref(num_neurons=num_neurons, seq_len=seq_len, action_dim=action_dim, training_steps=training_steps, learning_rate=learning_rate, batch_size=batch_size)
+        # predicted_cosine_wave, bump_activity = fwd_ref(num_neurons=num_neurons, seq_len=seq_len, action_dim=action_dim, training_steps=training_steps, learning_rate=learning_rate, batch_size=batch_size)
 
-        print("cosine_wave ref: ")
-        print(predicted_cosine_wave[0][0][:10])
+        # print("cosine_wave ref: ")
+        # print(predicted_cosine_wave[0][0][:10])
 
-        print("bump_activity ref: ")
-        print(bump_activity[0][0][:10])
+        # print("bump_activity ref: ")
+        # print(bump_activity[0][0][:10])
 
-        # predicted_cosine_wave, bump_activity = fwd(num_neurons=num_neurons, seq_len=seq_len, action_dim=action_dim, training_steps=training_steps, learning_rate=learning_rate, batch_size=batch_size, ref=False)   
+        # predicted_cosine_wave, bump_activity = benchmark(num_neurons=num_neurons, seq_len=seq_len, action_dim=action_dim, batch_size=batch_size)  
+
+        benchmark(num_neurons=num_neurons, seq_len=seq_len, action_dim=action_dim, batch_size=batch_size) 
 
         # print("cosine_wave mine: ")
         # print(predicted_cosine_wave[0][0][:10])
 
         # print("bump_activity mine: ")
         # print(bump_activity[0][0][:10])
+
+    # Run benchmarks
+    # results = benchmark_fwd(num_trials=10)
+    
+    # print("\n=== Benchmark Results ===")
+    # print(f"Reference Implementation: {results['reference_mean_ms']:.2f} ± {results['reference_std_ms']:.2f} ms")
+    # print(f"CUDA Implementation: {results['cuda_mean_ms']:.2f} ± {results['cuda_std_ms']:.2f} ms")
+    # print(f"Speedup: {results['speedup']:.2f}x")
+    # print(f"Maximum Error: {results['max_difference']:.2e}")
+    
+    # if results['max_difference'] > 1e-3:
+    #     print("\nWARNING: Large difference between implementations detected!")
 
 
