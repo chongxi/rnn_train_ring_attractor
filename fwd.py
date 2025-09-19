@@ -529,12 +529,11 @@ def benchmark(num_neurons=120, seq_len=120, action_dim=2, batch_size=32):
     
     print("--------------- Check correctness ----------------------")
 
-    def check_tensor_match(tensor1, tensor2, name, rtol=1e-5, atol=1e-8, max_print=10):
-        """Check if two tensors match within tolerance and print mismatches."""
-        if not torch.allclose(tensor1, tensor2, rtol=rtol, atol=atol):
+    def check_tensor_match(tsr_impl, tsr_ref, name, rtol=1e-5, atol=1e-8, max_print=10):
+        if not torch.allclose(tsr_impl, tsr_ref, rtol=rtol, atol=atol):
             print(f"\n{name} differences:")
-            diff = (tensor1 - tensor2).abs()
-            mismatch = ~torch.isclose(tensor1, tensor2, rtol=rtol, atol=atol)
+            diff = (tsr_impl - tsr_ref).abs()
+            mismatch = ~torch.isclose(tsr_impl, tsr_ref, rtol=rtol, atol=atol)
             num_mismatched = mismatch.sum().item()
             indices = torch.nonzero(mismatch)[:max_print]
             
@@ -542,11 +541,11 @@ def benchmark(num_neurons=120, seq_len=120, action_dim=2, batch_size=32):
             print("--------------------------------------------------------")
             for idx in indices:
                 b, t, n = idx
-                print(f"[batch={b:2d},t={t:3d},n={n:3d}]: {tensor2[b,t,n]:10.6f} {tensor1[b,t,n]:10.6f} {diff[b,t,n]:10.6f}")
+                print(f"[batch={b:2d},t={t:3d},n={n:3d}]: {tsr_ref[b,t,n]:10.6f} {tsr_impl[b,t,n]:10.6f} {diff[b,t,n]:10.6f}")
             
             if num_mismatched > max_print:
                 print("...")
-            print(f"Total mismatched elements: {num_mismatched} out of {tensor1.numel()}")
+            print(f"Total mismatched elements: {num_mismatched} out of {tsr_impl.numel()}")
             return False
         else:
             print(f"{name} match!")
