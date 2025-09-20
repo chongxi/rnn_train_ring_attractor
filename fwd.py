@@ -4,7 +4,7 @@ from generate_av_integration_data import AVIntegrationDataset
 from model_bf16 import GeneralizedRingAttractorNoGain_ref
 
 torch.set_printoptions(linewidth=200)
-
+# torch.set_default_dtype(torch.bfloat16)
 #################################################################################################
 ############################################## CUDA #############################################
 #################################################################################################
@@ -274,20 +274,71 @@ def process_ring_attractor_sequence_cuda(action_signal, r, J0, J1, Wo, Wa, W_del
         # torch_sum(A_t, Wa, Wa_weighted)
         module.torch_sum(A_t, Wa, Wa_weighted)
 
-        # module.torch_sum(A_t, 
-        #                  Wa,
-        #                  J0,
-        #                  J1,
-        #                  r,
-        #                  Wo, 
-        #                  Wa_weighted)
 
         W_eff = J0 + J1 * Wo + Wa_weighted
 
         recurrent_input.copy_((W_eff @ r.unsqueeze(2)).squeeze(2))
         recurrent_input = non_linear(recurrent_input, activation_name)
+
         alpha = 0.15
         r = r * (1 - alpha) + recurrent_input * alpha
+
+        bump_history.append(r)
+
+
+        # r_delta7.copy_(r @ W_delta7)
+        # r_max = r_delta7.max(dim=1, keepdim=True)[0]
+        # r_delta7.div_(r_max)  # normalize
+
+        r_delta7 = r @ W_delta7
+        r_max = r_delta7.max(dim=1, keepdim=True)[0]
+        r_delta7 = r_delta7 / r_max
+
+        r_history.append(r_delta7)
+
+    return torch.stack(r_history, dim=1), torch.stack(bump_history, dim=1)
+
+def process_ring_attractor_sequence_cuda2(action_signal, r, J0, J1, Wo, Wa, W_delta7, activation_name, Wa_weighted, recurrent_input, r_delta7):
+    batch_size, seq_len, action_dim = action_signal.shape
+    bump_history = []
+    r_history = []
+    A = action_signal  # (batch, seq, action_dim)
+    
+    # Pre-allocate W_eff tensor
+    W_eff = torch.zeros_like(Wa_weighted)
+    
+    for t in range(seq_len):
+        # Get action vector at time t
+        A_t = A[:, t, :]  # (batch, action_dim)
+        # A_t_expanded = A_t.unsqueeze(-1).unsqueeze(-1)
+        # Wa_weighted.copy_(torch.sum(A_t_expanded * Wa.unsqueeze(0), dim=1))
+
+        # torch_sum(A_t, Wa, Wa_weighted)
+        # module.torch_sum(A_t, Wa, Wa_weighted)
+
+        module.torch_sum(A_t, 
+                         Wa,
+                         J0,
+                         J1,
+                         Wo,
+                         r,
+                         Wa_weighted,
+                         recurrent_input,
+                         W_eff,
+                         )
+
+        # W_eff = J0 + J1 * Wo
+
+        # W_eff2 = W_eff + Wa_weighted
+
+
+
+        # recurrent_input.copy_((W_eff @ r.unsqueeze(2)).squeeze(2))
+        recurrent_input = non_linear(recurrent_input, activation_name)
+
+        alpha = 0.15
+        r = r * (1 - alpha) + recurrent_input * alpha
+
         bump_history.append(r)
 
 
@@ -442,7 +493,7 @@ class GeneralizedRingAttractorNoGain(nn.Module):
 
         # return process_ring_attractor_sequence(action_signal, r, self.J0, self.J1, self.Wo, self.Wa, self.W_delta7, self.activation_name, Wa_weighted, recurrent_input, r_delta7)
         # else:
-        return process_ring_attractor_sequence_cuda(action_signal, r, self.J0, self.J1, self.Wo, self.Wa, self.W_delta7, self.activation_name, Wa_weighted, recurrent_input, r_delta7)       
+        return process_ring_attractor_sequence_cuda2(action_signal, r, self.J0, self.J1, self.Wo, self.Wa, self.W_delta7, self.activation_name, Wa_weighted, recurrent_input, r_delta7)       
         
 
 def benchmark(num_neurons=120, seq_len=120, action_dim=2, batch_size=32):
@@ -528,33 +579,41 @@ def benchmark(num_neurons=120, seq_len=120, action_dim=2, batch_size=32):
     predicted_cosine_wave_ref, bump_activity_ref = ring_rnn_ref(av_signal_bf16, r_init=r_init_bf16)
     
     print("--------------- Check correctness ----------------------")
-
+    # def check_tensor_match(tsr_impl, tsr_ref, name, rtol=0.01, atol=0.0001, max_print=10):
     def check_tensor_match(tsr_impl, tsr_ref, name, rtol=1e-5, atol=1e-8, max_print=10):
         if not torch.allclose(tsr_impl, tsr_ref, rtol=rtol, atol=atol):
             print(f"\n{name} differences:")
             diff = (tsr_impl - tsr_ref).abs()
+            rdiff = diff / (torch.abs(tsr_ref) + atol)
             mismatch = ~torch.isclose(tsr_impl, tsr_ref, rtol=rtol, atol=atol)
             num_mismatched = mismatch.sum().item()
             indices = torch.nonzero(mismatch)[:max_print]
             
-            print("Mismatch at                 ref         impl        diff")
-            print("--------------------------------------------------------")
+            print("Mismatch at                 ref         impl        diff        rdiff")
+            print("---------------------------------------------------------------------")
             for idx in indices:
                 b, t, n = idx
-                print(f"[batch={b:2d},t={t:3d},n={n:3d}]: {tsr_ref[b,t,n]:10.6f} {tsr_impl[b,t,n]:10.6f} {diff[b,t,n]:10.6f}")
+                print(f"[batch={b:2d},t={t:3d},n={n:3d}]: {tsr_ref[b,t,n]:10.6f} {tsr_impl[b,t,n]:10.6f} {diff[b,t,n]:10.6f} {rdiff[b,t,n]:10.6f}")
             
             if num_mismatched > max_print:
                 print("...")
             print(f"Total mismatched elements: {num_mismatched} out of {tsr_impl.numel()}")
+            print(f"diff: {diff.mean():.6f} ± {diff.std():.6f}")
+            print(f"rdiff: {rdiff.mean():.6f} ± {rdiff.std():.6f}")
             return False
         else:
             print(f"{name} match!")
             return True
 
     # Check both tensors
-    check_tensor_match(predicted_cosine_wave, predicted_cosine_wave_ref, "Cosine waves")
+    check_tensor_match(tsr_impl=predicted_cosine_wave, tsr_ref=predicted_cosine_wave_ref, name="Cosine waves", max_print=20)
     # check_tensor_match(predicted_cosine_wave, predicted_cosine_wave_ref, "Cosine waves", rtol=0.1, atol=0.01)
-    check_tensor_match(bump_activity, bump_activity_ref, "Bump activities")
+    check_tensor_match(tsr_impl=bump_activity, tsr_ref=bump_activity_ref, name="Bump activities")
+
+    print("ref cosine: ", predicted_cosine_wave_ref[0][0][:10])
+    print("impl cosine: ", predicted_cosine_wave[0][0][:10])
+    print("ref bump: ", bump_activity_ref[0][0][:10])
+    print("impl bump: ", bump_activity[0][0][:10])
 
 if __name__ == "__main__":
 
