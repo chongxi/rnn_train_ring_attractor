@@ -28,12 +28,10 @@ void torch_sum_cuda(
 __device__ float smem_reduce(float val_per_thread) {
     __shared__ float s_data[256];
     
-    // Load data into shared memory
     s_data[threadIdx.x] = val_per_thread;
     __syncthreads();
     
-    // Reduction in shared memory
-    for (unsigned int stride = blockDim.x/2; stride > 0; stride >>= 1) {
+    for (unsigned int stride = BLOCK_SIZE / 2; stride > 0; stride /= 2) {
         if (threadIdx.x < stride) {
             s_data[threadIdx.x] += s_data[threadIdx.x + stride];
         }
@@ -48,7 +46,6 @@ __device__ float warp_reduce(float val_per_thread) {
     int warp_idx = cta.thread_rank() / 32;
     int warp_lane_idx = cta.thread_rank() % 32;
     
-    // Perform warp-level reduction
     float warp_sum = val_per_thread;
     for (int offset = WARP_SIZE / 2; offset > 0; offset /= 2) {
         warp_sum += __shfl_down_sync(0xffffffff, warp_sum, offset);
