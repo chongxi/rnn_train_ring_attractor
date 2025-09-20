@@ -43,8 +43,8 @@ __device__ float smem_reduce(float val_per_thread) {
 
 __device__ float warp_reduce(float val_per_thread) {
     auto cta = cg::this_thread_block();
-    int warp_idx = cta.thread_rank() / 32;
-    int warp_lane_idx = cta.thread_rank() % 32;
+    int warp_idx = cta.thread_rank() / WARP_SIZE;
+    int warp_lane_idx = cta.thread_rank() % WARP_SIZE;
     
     float warp_sum = val_per_thread;
     for (int offset = WARP_SIZE / 2; offset > 0; offset /= 2) {
