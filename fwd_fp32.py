@@ -368,9 +368,9 @@ def process_ring_attractor_sequence_cuda3(action_signal, r, J0, J1, Wo, Wa, W_de
         # recurrent_input.copy_((W_eff @ r.unsqueeze(2)).squeeze(2))
         # recurrent_input = non_linear(recurrent_input, activation_name)
 
-        alpha = 0.15
-        r = r * (1 - alpha) + recurrent_input * alpha
-        bump_history[0, t, :] = r.squeeze(0)
+        # alpha = 0.15
+        # r = r * (1 - alpha) + recurrent_input * alpha
+        # bump_history[0, t, :] = r.squeeze(0)
 
         r_delta7 = r @ W_delta7
         r_max = r_delta7.max(dim=1, keepdim=True)[0]
@@ -384,73 +384,7 @@ def process_ring_attractor_sequence_cuda3(action_signal, r, J0, J1, Wo, Wa, W_de
 
 
 class GeneralizedRingAttractorNoGain(nn.Module):
-    """
-    Generalized Ring Attractor model with arbitrary action dimensions but WITHOUT gain networks.
-    r += (-r + F(J0.dot(r) + J1*Wo.dot(r) + sum_i(A_i * Wa_i.dot(r)))) * dt / tau
-    where A is an action vector of dimension k, and Wa is a tensor of shape (k, N, N)
 
-    This version directly uses action signals without any gain modulation.
-
-    Step 1: Take batch 0
-    A_t[0,0] = 0.5, A_t[0,1] = 1.0
-
-
-    Multiply each matrix by the action weight:
-
-    0.5 * Wa[0] =
-    [[0.5, 1.0, 1.5],
-    [2.0, 2.5, 3.0],
-    [3.5, 4.0, 4.5]]
-
-    1.0 * Wa[1] =
-    [[10, 20, 30],
-    [40, 50, 60],
-    [70, 80, 90]]
-
-
-    Add them:
-
-    Wa_weighted[0] =
-    [[10.5, 21.0, 31.5],
-    [42.0, 52.5, 63.0],
-    [73.5, 84.0, 94.5]]
-
-    Step 2: Take batch 1
-    A_t[1,0] = 2.0, A_t[1,1] = 0.1
-
-
-    Multiply:
-
-    2.0 * Wa[0] =
-    [[2, 4, 6],
-    [8, 10, 12],
-    [14, 16, 18]]
-
-    0.1 * Wa[1] =
-    [[1, 2, 3],
-    [4, 5, 6],
-    [7, 8, 9]]
-
-
-    Add them:
-
-    Wa_weighted[1] =
-    [[3, 6, 9],
-    [12, 15, 18],
-    [21, 24, 27]]
-
-    ✅ Final Result
-    Wa_weighted =
-    [
-    [[10.5, 21.0, 31.5],
-    [42.0, 52.5, 63.0],
-    [73.5, 84.0, 94.5]],
-
-    [[3, 6, 9],
-    [12, 15, 18],
-    [21, 24, 27]]
-    ]
-    """
     def __init__(self, num_neurons, action_dim=2, tau=10.0, dt=1.0, activation='tanh',
                  initialization='random', device='cuda'):
         super().__init__()
@@ -501,26 +435,12 @@ class GeneralizedRingAttractorNoGain(nn.Module):
         else:
             r = r_init
 
-        bump_history = []
-        r_history = []
-
-        # Pre-allocate memory for history
-        # r_history = torch.zeros(batch_size, seq_len, N, device=self.Wo.device, dtype=r.dtype)
-        # bump_history = torch.zeros(batch_size, seq_len, N, device=self.Wo.device, dtype=r.dtype)
-        
 
         # Pre-allocate intermediate tensors
         Wa_weighted = torch.zeros(batch_size, N, N, device=self.Wo.device, dtype=self.Wa.dtype)
         recurrent_input = torch.zeros(batch_size, N, device=self.Wo.device, dtype=r.dtype)
         r_delta7 = torch.zeros(batch_size, N, device=self.Wo.device, dtype=r.dtype)
 
-        # bump_history[:, t, :].copy_(r)
-
-        # r_history[:, t, :].copy_(r_delta7)
-
-
-        # return process_ring_attractor_sequence(action_signal, r, self.J0, self.J1, self.Wo, self.Wa, self.W_delta7, self.activation_name, Wa_weighted, recurrent_input, r_delta7)
-        # else:
         return process_ring_attractor_sequence_cuda3(action_signal, r, self.J0, self.J1, self.Wo, self.Wa, self.W_delta7, self.activation_name, Wa_weighted, recurrent_input, r_delta7)       
         
 
@@ -541,6 +461,7 @@ def benchmark(num_neurons=120, seq_len=120, action_dim=2, batch_size=32):
     )
 
     set_seed(42)
+    
 
     ring_rnn = GeneralizedRingAttractorNoGain(
         num_neurons=num_neurons,
@@ -558,6 +479,7 @@ def benchmark(num_neurons=120, seq_len=120, action_dim=2, batch_size=32):
         param.requires_grad = False
 
     set_seed(42)
+    
 
     ring_rnn_ref = GeneralizedRingAttractorNoGain_ref(
         num_neurons=num_neurons,
@@ -602,9 +524,12 @@ def benchmark(num_neurons=120, seq_len=120, action_dim=2, batch_size=32):
     
 
     # Forward pass
+    r_init_impl = r_init_fp32.detach().clone()
+    r_init_ref = r_init_fp32.detach().clone()
 
-    predicted_cosine_wave, bump_activity = ring_rnn(av_signal_fp32, r_init=r_init_fp32)
-    predicted_cosine_wave_ref, bump_activity_ref = ring_rnn_ref(av_signal_fp32, r_init=r_init_fp32)
+
+    predicted_cosine_wave, bump_activity = ring_rnn(av_signal_fp32, r_init=r_init_impl)
+    predicted_cosine_wave_ref, bump_activity_ref = ring_rnn_ref(av_signal_fp32, r_init=r_init_ref)
     
     print("--------------- Check correctness ----------------------")
     # def check_tensor_match(tsr_impl, tsr_ref, name, rtol=0.01, atol=0.0001, max_print=10):

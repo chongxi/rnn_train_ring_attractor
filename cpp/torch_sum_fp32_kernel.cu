@@ -1,11 +1,22 @@
 #include <cuda_bf16.h>
 #include <cuda_runtime.h>
 #include <cooperative_groups.h>
+#include <iostream>
 
 #define WARP_SIZE 32
 #define BLOCK_SIZE 256
 namespace cg = cooperative_groups;
 
+#define CHECK_CUDA_ERROR(val) check((val), #val, __FILE__, __LINE__)
+void check(cudaError_t err, char const* func, char const* file, int line)
+{
+    if (err != cudaSuccess)
+    {
+        std::cerr << "CUDA Runtime Error at: " << file << ":" << line << std::endl;
+        std::cerr << cudaGetErrorString(err) << " " << func << std::endl;
+        std::exit(EXIT_FAILURE);
+    }
+}
 
 void torch_sum_cuda(
     void* A_t,
@@ -42,6 +53,46 @@ __device__ float smem_reduce(float val_per_thread) {
     }
     
     return s_data[0]; //broadcast, not bank conflict
+}
+
+// FIX 4: In CUDA kernel - use Kahan summation for stable reduction
+__device__ float stable_reduce(float val_per_thread) {
+    __shared__ float s_data[256];
+    __shared__ float s_comp[256];  // Compensation for lost precision
+    
+    s_data[threadIdx.x] = val_per_thread;
+    s_comp[threadIdx.x] = 0.0f;
+    __syncthreads();
+    
+    for (unsigned int stride = BLOCK_SIZE / 2; stride > 0; stride /= 2) {
+        if (threadIdx.x < stride) {
+            float y = s_data[threadIdx.x + stride] - s_comp[threadIdx.x];
+            float t = s_data[threadIdx.x] + y;
+            s_comp[threadIdx.x] = (t - s_data[threadIdx.x]) - y;
+            s_data[threadIdx.x] = t;
+        }
+        __syncthreads();
+    }
+    
+    return s_data[0];
+}
+
+__device__ float deterministic_reduce(float val_per_thread) {
+    __shared__ float s_data[256];
+    s_data[threadIdx.x] = val_per_thread;
+    __syncthreads();
+    
+    // CRITICAL: Only thread 0 does reduction in fixed order
+    if (threadIdx.x == 0) {
+        double sum = 0.0;  // Use double precision for accumulation
+        for (int i = 0; i < BLOCK_SIZE; ++i) {
+            sum += (double)s_data[i];  // Fixed order: 0,1,2,...,255
+        }
+        s_data[0] = (float)sum;
+    }
+    __syncthreads();
+    
+    return s_data[0];
 }
 
 __device__ float warp_reduce(float val_per_thread) {
@@ -143,7 +194,10 @@ __global__ void torch_sum_kernel(
 
     // }
 
-    float result = smem_reduce(val_per_thread);
+    // float result = smem_reduce(val_per_thread);
+    // float result = warp_reduce(val_per_thread);
+    // float result = stable_reduce(val_per_thread);
+    float result = deterministic_reduce(val_per_thread);
 
     // float re_inp_val_activ = 0.5f * result * (1.f + tanhf(SQR_2_PI * (result + 0.044715f * result * result * result)));
 
@@ -156,24 +210,21 @@ __global__ void torch_sum_kernel(
 
     // Follows pytorch's own Aten implementation
 
-    float kBetaVec = M_SQRT2 * M_2_SQRTPI * 0.5f;
-    float re_inp_val_activ = 0.5f * result * (1.f + tanhf(kBetaVec * fmaf(0.044715f, result * result * result, result)));
-    re_inp[blockIdx.x] = re_inp_val_activ;
+
 
     // __syncthreads();
 
-    // if (threadIdx.x == 0){
-    //     float alpha = 0.15f;
-    //     // float one_minus_alpha = 0.85f;
+    if (threadIdx.x == 0){
 
-    //     // Exponential moving average
-    //     float r_temp = fmaf(r[blockIdx.x], 1.f - alpha, re_inp_val_activ * alpha);
+        float kBetaVec = M_SQRT2 * M_2_SQRTPI * 0.5f;
+        float re_inp_val_activ = 0.5f * result * (1.f + tanhf(kBetaVec * fmaf(0.044715f, result * result * result, result)));
+        re_inp[blockIdx.x] = re_inp_val_activ;
 
-    //     // float r_temp = r[blockIdx.x] * (1.f - alpha) + re_inp_val_activ * alpha;
-
-    //     r[blockIdx.x] = r_temp;
-    //     bump_history[t * N + blockIdx.x] = r_temp;
-    // }
+        float alpha = 0.15f;
+        float r_temp = fmaf(r[blockIdx.x], 1.f - alpha, re_inp_val_activ * alpha);
+        r[blockIdx.x] = r_temp;
+        bump_history[t * N + blockIdx.x] = r_temp;
+    }
 
     // __syncthreads();
 }
@@ -216,4 +267,5 @@ void torch_sum_cuda(
         N,
         a_dim        
     );
+    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 }
