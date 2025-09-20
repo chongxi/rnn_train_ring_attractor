@@ -14,6 +14,8 @@ void torch_sum_cuda(
     void* Wa_weighted, // internal use
     void* re_inp, // internal use
     void* W_eff,
+    int t,
+    void* bump_history,
 
     int N,
     int a_dim
@@ -30,7 +32,9 @@ void torch_sum(
 
     at::Tensor& Wa_weighted,
     at::Tensor& r_inp,
-    at::Tensor& W_eff
+    at::Tensor& W_eff,
+    int t,
+    at::Tensor& bump_history
 ) {
     int a_dim = Wa.sizes()[0];
     int N = Wa.sizes()[1];
@@ -47,6 +51,8 @@ void torch_sum(
         Wa_weighted.data_ptr(), 
         r_inp.data_ptr(), 
         W_eff.data_ptr(),
+        t,
+        bump_history.data_ptr(),
         N, 
         a_dim);
 }

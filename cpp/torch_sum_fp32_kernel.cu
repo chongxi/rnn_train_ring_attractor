@@ -19,13 +19,16 @@ void torch_sum_cuda(
     void* Wa_weighted, // internal use
     void* re_inp, // internal use
     void* W_eff,
-
+    int t,
+    void* bump_history,
     int N,
     int a_dim
 );
 
 
 __device__ float smem_reduce(float val_per_thread) {
+    // Return result stored in smem and copied to every threads' register, so all thread have access to them
+    
     __shared__ float s_data[256];
     
     s_data[threadIdx.x] = val_per_thread;
@@ -38,10 +41,12 @@ __device__ float smem_reduce(float val_per_thread) {
         __syncthreads();
     }
     
-    return s_data[0];
+    return s_data[0]; //broadcast, not bank conflict
 }
 
 __device__ float warp_reduce(float val_per_thread) {
+    // Return result stored in first thread's register, only first thread has access to correct reduction sum, other threads have result = 0.f their registers
+
     auto cta = cg::this_thread_block();
     int warp_idx = cta.thread_rank() / WARP_SIZE;
     int warp_lane_idx = cta.thread_rank() % WARP_SIZE;
@@ -87,13 +92,15 @@ __global__ void torch_sum_kernel(
     float* Wa_weighted, // [1, 256, 256], internal use
     float* re_inp, // internal use [1, 256]
     float* W_eff,
+    int t,
+    float* bump_history,
 
     int N,
     int a_dim
 ){  
     int row_idx = blockIdx.x;
     int col_idx = threadIdx.x;
-
+    
     float SQR_2_PI = sqrtf(2.f / M_PIf32);
 
     // for (int t = 0; t < seq_len; ++t){
@@ -137,14 +144,38 @@ __global__ void torch_sum_kernel(
     // }
 
     float result = smem_reduce(val_per_thread);
-    float re_inp_val_activ = 0.5f * result * (1.f + tanhf(SQR_2_PI * (result + 0.044715f * result * result * result)));
 
-    re_inp[blockIdx.x] = re_inp_val_activ;
+    // float re_inp_val_activ = 0.5f * result * (1.f + tanhf(SQR_2_PI * (result + 0.044715f * result * result * result)));
 
+    // // re_inp[blockIdx.x] = re_inp_val_activ;
 
     // float alpha = 0.15f;
-    // float temp = r[blockIdx.x];
-    // r[blockIdx.x] = temp * (1.f - alpha) + re_inp_val_activ * alpha;
+
+    // float r_temp = r[blockIdx.x] * (1.f - alpha) + alpha * re_inp_val_activ;
+    // bump_history[t * N + blockIdx.x] = r_temp;
+
+    // Follows pytorch's own Aten implementation
+
+    float kBetaVec = M_SQRT2 * M_2_SQRTPI * 0.5f;
+    float re_inp_val_activ = 0.5f * result * (1.f + tanhf(kBetaVec * fmaf(0.044715f, result * result * result, result)));
+    re_inp[blockIdx.x] = re_inp_val_activ;
+
+    // __syncthreads();
+
+    // if (threadIdx.x == 0){
+    //     float alpha = 0.15f;
+    //     // float one_minus_alpha = 0.85f;
+
+    //     // Exponential moving average
+    //     float r_temp = fmaf(r[blockIdx.x], 1.f - alpha, re_inp_val_activ * alpha);
+
+    //     // float r_temp = r[blockIdx.x] * (1.f - alpha) + re_inp_val_activ * alpha;
+
+    //     r[blockIdx.x] = r_temp;
+    //     bump_history[t * N + blockIdx.x] = r_temp;
+    // }
+
+    // __syncthreads();
 }
 
 void torch_sum_cuda(
@@ -159,6 +190,8 @@ void torch_sum_cuda(
     void* Wa_weighted, // internal use
     void* re_inp, // internal use
     void* W_eff,
+    int t,
+    void* bump_history,
 
     int N,
     int a_dim
@@ -178,6 +211,8 @@ void torch_sum_cuda(
         static_cast<float *>(Wa_weighted), // internal use
         static_cast<float *>(re_inp),
         static_cast<float *>(W_eff),
+        t,
+        static_cast<float *>(bump_history),
         N,
         a_dim        
     );
