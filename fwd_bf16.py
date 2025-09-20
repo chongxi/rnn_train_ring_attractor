@@ -334,7 +334,7 @@ def process_ring_attractor_sequence_cuda2(action_signal, r, J0, J1, Wo, Wa, W_de
 
 
         # recurrent_input.copy_((W_eff @ r.unsqueeze(2)).squeeze(2))
-        recurrent_input = non_linear(recurrent_input, activation_name)
+        # recurrent_input = non_linear(recurrent_input, activation_name)
 
         alpha = 0.15
         r = r * (1 - alpha) + recurrent_input * alpha
@@ -606,8 +606,8 @@ def benchmark(num_neurons=120, seq_len=120, action_dim=2, batch_size=32):
             return True
 
     # Check both tensors
-    check_tensor_match(tsr_impl=predicted_cosine_wave, tsr_ref=predicted_cosine_wave_ref, name="Cosine waves", max_print=20)
-    # check_tensor_match(predicted_cosine_wave, predicted_cosine_wave_ref, "Cosine waves", rtol=0.1, atol=0.01)
+    # check_tensor_match(tsr_impl=predicted_cosine_wave, tsr_ref=predicted_cosine_wave_ref, name="Cosine waves", max_print=20)
+    check_tensor_match(predicted_cosine_wave, predicted_cosine_wave_ref, "Cosine waves", rtol=1e-4, atol=1e-4)
     check_tensor_match(tsr_impl=bump_activity, tsr_ref=bump_activity_ref, name="Bump activities")
 
     print("ref cosine: ", predicted_cosine_wave_ref[0][0][:10])

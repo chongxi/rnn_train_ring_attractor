@@ -127,11 +127,11 @@ __global__ void torch_sum_kernel(
     // OR
     float result = warp_reduce(val_per_thread);
     if (threadIdx.x == 0){
-        re_inp[blockIdx.x] = __float2bfloat16(result);
+        // re_inp[blockIdx.x] = __float2bfloat16(result);
 
         // GELU activation
-        // float re_inp_val_activ = 0.5f * result * (1.f + tanhf(SQR_2_PI * (result + 0.044715f * result * result * result)));
-        // re_inp[blockIdx.x] = __float2bfloat16(re_inp_val_activ);
+        float re_inp_val_activ = 0.5f * result * (1.f + tanhf(SQR_2_PI * (result + 0.044715f * result * result * result)));
+        re_inp[blockIdx.x] = __float2bfloat16(re_inp_val_activ);
     }
 
 
