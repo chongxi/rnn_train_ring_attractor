@@ -19,7 +19,7 @@ void check(cudaError_t err, char const* func, char const* file, int line)
 }
 
 void torch_sum_cuda(
-    void* A_t,
+    void* A,
     void* Wa,
     void* J0,
     float J1,
@@ -27,15 +27,15 @@ void torch_sum_cuda(
 
     void* r, // init value for r
 
-    void* Wa_weighted, // internal use
-    void* re_inp, // internal use
+    void* W_delta7,
     void* W_eff,
-    int t,
     void* bump_history,
     void* r_delta7,
     void* r_history,
+    void* re_inp,
     int N,
-    int a_dim
+    int a_dim,
+    int seq_len
 );
 
 
@@ -133,146 +133,159 @@ __device__ float warp_reduce(float val_per_thread) {
     return reduction_result;
 }
 
+__device__ float smem_reduce_max(float val_per_thread) {
+    __shared__ float s_data[256];
+    
+    s_data[threadIdx.x] = val_per_thread;
+    __syncthreads();
+    
+    for (unsigned int stride = BLOCK_SIZE / 2; stride > 0; stride /= 2) {
+        if (threadIdx.x < stride) {
+            s_data[threadIdx.x] = fmaxf(s_data[threadIdx.x], s_data[threadIdx.x + stride]);
+        }
+        __syncthreads();
+    }
+    
+    return s_data[0];
+}
+
+__device__ float warp_reduce_max(float val_per_thread) {
+    auto cta = cg::this_thread_block();
+    int warp_idx = cta.thread_rank() / WARP_SIZE;
+    int warp_lane_idx = cta.thread_rank() % WARP_SIZE;
+    
+    float warp_max = val_per_thread;
+    for (int offset = WARP_SIZE / 2; offset > 0; offset /= 2) {
+        warp_max = fmaxf(warp_max, __shfl_down_sync(0xffffffff, warp_max, offset));
+    }
+    
+    __shared__ float temp_reduction[32];
+    
+    if (warp_lane_idx == 0) {
+        temp_reduction[warp_idx] = warp_max;
+    }
+    
+    __syncthreads();
+    
+    float reduction_result = -INFINITY;
+
+    if (warp_idx == 0) {
+        reduction_result = temp_reduction[warp_lane_idx];
+        
+        for (int offset = (BLOCK_SIZE / WARP_SIZE) / 2; offset > 0; offset /= 2) {
+            reduction_result = fmaxf(reduction_result, __shfl_down_sync(0xffffffff, reduction_result, offset));
+        }
+    }
+
+    return reduction_result;
+}
+
 __global__ void torch_sum_kernel(
-    const float* A_t, // shape (32,)
+    const float* A, // shape [1, 128, 32]
     const float* Wa, // shape [32, 256, 256]
     const float* J0, // shape [256, 256]
     float J1,
     const float* Wo,
-
-    float* r, // init value for r
-
-    float* Wa_weighted, // [1, 256, 256], internal use
-    float* re_inp, // internal use [1, 256]
     float* W_eff,
-    int t,
-    float* bump_history,
-    float* r_delta7,
-    float* r_history,
-
     int N,
-    int a_dim
+    int a_dim,
+    int seq_len
 ){  
-    int row_idx = blockIdx.x;
+    // Todo, use smem, use num threads = 1024 -> tile = 256x32, use vectorized load
+    // Or use tile 128*64 fp32 or 256*64 bf16, try to saturate the huge bandwidth of sm_120
+    // Load all of A_t into smem, and pragma unroll to get lds.128
+    // Can implement smem for storing w_eff in vectorized mode
+
+    constexpr float kBetaVec = M_SQRT2 * M_2_SQRTPI * 0.5f;
+
+    // int row_idx = blockIdx.x;
     int col_idx = threadIdx.x;
     
-    float SQR_2_PI = sqrtf(2.f / M_PIf32);
+    // Persistent kernel for loop
+    for (int row_idx = 0; row_idx < N; ++row_idx){
+        float wa_weighted = 0.f;
+        for (int action = 0; action < a_dim; ++action){
+            // TODO: change/transpose/permute Wa for coalesced memory access ?
+            // Maybe already good
+            wa_weighted += A[blockIdx.x * a_dim + action] * Wa[action * N * N + row_idx * N + col_idx];
+        } // end for action
 
-    // for (int t = 0; t < seq_len; ++t){
-
-    //     // Step 1:
-
-    //     Wa_weighted[row_idx * N + col_idx] = Wa[][row_idx][col_idx]
-
-    // } // end for t
-    float accum = 0.f;
-
-    for (int action_idx = 0; action_idx < a_dim; ++action_idx){
-        accum += A_t[action_idx] * Wa[action_idx * N * N + row_idx * N + col_idx];
-    } // end for action_idx
-    
-
-    // Wa_weighted[row_idx * N + col_idx] = __float2bfloat16(accum); // note that this has shape [1, 256, 256]
-
-    float w_eff_temp = J0[row_idx * N + col_idx] + J1 * Wo[row_idx * N + col_idx] + accum;
+        W_eff[row_idx * N + col_idx] = J0[row_idx * N + col_idx] + J1 * Wo[row_idx * N + col_idx] + wa_weighted;
 
 
-    float val_per_thread = w_eff_temp * r[col_idx];
 
-    // float result = smem_reduce(val_per_thread);
-    // OR
-    // float result = warp_reduce(val_per_thread);
-    // if (threadIdx.x == 0){
-    //     // re_inp[blockIdx.x] = result;
+        // float re_inp_lane = w_eff * r[threadIdx.x];
 
-    //     // GELU activation
-    //     float re_inp_val_activ = 0.5f * result * (1.f + tanhf(SQR_2_PI * (result + 0.044715f * result * result * result)));
-    //     re_inp[blockIdx.x] = re_inp_val_activ;
+        // // syncthreads() inside warp_reduce, be aware of dead lock
+        // float re_inp_temp =  warp_reduce(re_inp_lane);
 
-    //     // float re_inp_val_activ = 0.5f * result * (1.f + tanhf(SQR_2_PI * (result + 0.044715f * result * result * result)));
+        // if (threadIdx.x == 0){
+        //     float re_inp_val = 0.5f * re_inp_temp * (1.f + tanhf(kBetaVec * fmaf(0.044715f, re_inp_temp * re_inp_temp * re_inp_temp, re_inp_temp)));
+        //     r_buf[row_idx] = re_inp_val;
+        // }
+    } // end for row_idx
+
+    // __syncthreads();
+
+    // re_inp[threadIdx.x] = r_buf[threadIdx.x];
+}
+
+// 2 phase, smem load and calculation, can implement double buffering
+// so that data is ready for the next r calculation
+__global__ void for_loop_kernel(
+    void* W_eff,
+    void* r, // init value for r
+    int N,
+    int a_dim,
+    int seq_len
+){
+    int row_idx = blockIdx.x;
+    int col_idx = threadIdx.x;
+
+    for (int t = 0; t < seq_len; ++t){
         
-    //     // float alpha = 0.15f;
-
-    //     // float temp = (1.f - alpha) * r[blockIdx.x] + alpha * re_inp_val_activ;
-    //     // r[blockIdx.x] = temp;
-
-    // }
-
-    // float result = smem_reduce(val_per_thread);
-    // float result = warp_reduce(val_per_thread);
-    // float result = stable_reduce(val_per_thread);
-    float result = deterministic_reduce(val_per_thread);
-
-    // float re_inp_val_activ = 0.5f * result * (1.f + tanhf(SQR_2_PI * (result + 0.044715f * result * result * result)));
-
-    // // re_inp[blockIdx.x] = re_inp_val_activ;
-
-    // float alpha = 0.15f;
-
-    // float r_temp = r[blockIdx.x] * (1.f - alpha) + alpha * re_inp_val_activ;
-    // bump_history[t * N + blockIdx.x] = r_temp;
-
-    // Follows pytorch's own Aten implementation
-
-
-
-    // __syncthreads();
-
-    if (threadIdx.x == 0){
-
-        float kBetaVec = M_SQRT2 * M_2_SQRTPI * 0.5f;
-        float re_inp_val_activ = 0.5f * result * (1.f + tanhf(kBetaVec * fmaf(0.044715f, result * result * result, result)));
-        re_inp[blockIdx.x] = re_inp_val_activ;
-
-        float alpha = 0.15f;
-        float r_temp = fmaf(r[blockIdx.x], 1.f - alpha, re_inp_val_activ * alpha);
-        r[blockIdx.x] = r_temp;
-        bump_history[t * N + blockIdx.x] = r_temp;
-    }
-
-    // __syncthreads();
+    } // end for t
 }
 
 void torch_sum_cuda(
-    void* A_t,
+    void* A,
     void* Wa,
     void* J0,
     float J1,
     void* Wo,
-
     void* r, // init value for r
-
-    void* Wa_weighted, // internal use
-    void* re_inp, // internal use
+    void* W_delta7,
     void* W_eff,
-    int t,
     void* bump_history,
     void* r_delta7,
     void* r_history,
+    void* re_inp,
     int N,
-    int a_dim
+    int a_dim,
+    int seq_len
 ){
     dim3 blockSize, gridSize;
 
-    blockSize = BLOCK_SIZE; gridSize = N;
+    blockSize = BLOCK_SIZE; gridSize = seq_len;
+
     torch_sum_kernel<<<gridSize, blockSize>>>(
-        static_cast<const float*>(A_t),
+        static_cast<const float*>(A),
         static_cast<const float*>(Wa),
         static_cast<const float*>(J0),
         J1,
         static_cast<const float*>(Wo),
-
-        static_cast<float*>(r),
-
-        static_cast<float *>(Wa_weighted), // internal use
-        static_cast<float *>(re_inp),
+        // static_cast<float*>(r),
+        // static_cast<float *>(W_delta7),
         static_cast<float *>(W_eff),
-        t,
-        static_cast<float *>(bump_history),
-        static_cast<float *>(r_delta7),
-        static_cast<float *>(r_history),
+        // static_cast<float *>(bump_history),
+        // static_cast<float *>(r_delta7),
+        // static_cast<float *>(r_history),
+        // static_cast<float *>(re_inp),
         N,
-        a_dim        
+        a_dim,
+        seq_len        
     );
     CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+
+    blockSize = BLOCK_SIZE; gridSize = N;
 }

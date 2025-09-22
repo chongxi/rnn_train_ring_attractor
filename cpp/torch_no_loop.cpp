@@ -3,27 +3,25 @@
 #include <torch/csrc/utils/pybind.h>
 
 void torch_sum_cuda(
-    void* A_t,
+    void* A,
     void* Wa,
     void* J0,
     float J1,
     void* Wo,
-
     void* r, // init value for r
-
-    void* Wa_weighted, // internal use
-    void* re_inp, // internal use
+    void* W_delta7,
     void* W_eff,
-    int t,
     void* bump_history,
     void* r_delta7,
     void* r_history,
+    void* re_inp,
     int N,
-    int a_dim
+    int a_dim,
+    int seq_len
 );
 
 void torch_sum(
-    const at::Tensor& A_t, 
+    const at::Tensor& A, 
     const at::Tensor& Wa,
     const at::Tensor& J0,
     float J1,
@@ -31,38 +29,36 @@ void torch_sum(
     
     at::Tensor& r,
 
-    at::Tensor& Wa_weighted,
-    at::Tensor& re_inp,
+    at::Tensor& W_delta7,
     at::Tensor& W_eff,
-    int t,
     at::Tensor& bump_history,
     at::Tensor& r_delta7,
-    at::Tensor& r_history
+    at::Tensor& r_history,
+    at::Tensor& re_inp
 ) {
-    int a_dim = Wa.sizes()[0];
-    int N = Wa.sizes()[1];
+    auto sizes = A.sizes();
+    int batch_size = sizes[0], seq_len = sizes[1], a_dim = sizes[2];
+    int N = Wa.size(1);
 
     torch_sum_cuda(
-        A_t.data_ptr(), 
+        A.data_ptr(), 
         Wa.data_ptr(),
         J0.data_ptr(),
         J1,
         Wo.data_ptr(),
-        
         r.data_ptr(),
-        
-        Wa_weighted.data_ptr(), 
-        re_inp.data_ptr(), 
+        W_delta7.data_ptr(), 
         W_eff.data_ptr(),
-        t,
         bump_history.data_ptr(),
         r_delta7.data_ptr(),
         r_history.data_ptr(),
+        re_inp.data_ptr(),
         N, 
-        a_dim);
+        a_dim,
+        seq_len);
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("torch_sum", &torch_sum, "torch_sum (CUDA)",
-          py::arg("A_t"), py::arg("Wa"), py::arg("J0"), py::arg("J1"), py::arg("Wo"), py::arg("r"), py::arg("Wa_weighted"), py::arg("re_inp"), py::arg("W_eff"), py::arg("t"), py::arg("bump_history"), py::arg("r_delta7"), py::arg("r_history"));
+          py::arg("A"), py::arg("Wa"), py::arg("J0"), py::arg("J1"), py::arg("Wo"), py::arg("r"), py::arg("W_delta7"), py::arg("W_eff"), py::arg("bump_history"), py::arg("r_delta7"), py::arg("r_history"), py::arg("re_inp"));
 }
