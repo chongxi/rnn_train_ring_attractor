@@ -44,7 +44,7 @@ if force_rebuild:
 
 module = load(
     name='torch_sum',
-    sources=[f"{dir_path}/cpp/torch_sum_fp32_kernel.cu", f"{dir_path}/cpp/torch_sum_fp32.cpp"],
+    sources=[f"{dir_path}/cpp/torch_no_loop.cu", f"{dir_path}/cpp/torch_no_loop.cpp"],
     verbose=True,
     build_directory=build_dir 
 )
@@ -375,7 +375,7 @@ class GeneralizedRingAttractorNoGain(nn.Module):
         recurrent_input = torch.zeros(batch_size, N, device=self.Wo.device, dtype=r.dtype)
         r_delta7 = torch.zeros(batch_size, N, device=self.Wo.device, dtype=r.dtype)
 
-        return process_ring_attractor_sequence_cuda3(action_signal, r, self.J0, self.J1, self.Wo, self.Wa, self.W_delta7, self.activation_name, Wa_weighted, recurrent_input, r_delta7)       
+        return process_ring_attractor_sequence_cuda4(action_signal, r, self.J0, self.J1, self.Wo, self.Wa, self.W_delta7, self.activation_name, Wa_weighted, recurrent_input, r_delta7)       
         
 
 def benchmark(num_neurons=120, seq_len=120, action_dim=2, batch_size=32):
@@ -494,16 +494,20 @@ def benchmark(num_neurons=120, seq_len=120, action_dim=2, batch_size=32):
 
     # Check both tensors
     # check_tensor_match(tsr_impl=predicted_cosine_wave, tsr_ref=predicted_cosine_wave_ref, name="Cosine waves", max_print=20)
-    check_tensor_match(predicted_cosine_wave, predicted_cosine_wave_ref, "Cosine waves", rtol=5e-5, atol=5e-5)
-    check_tensor_match(tsr_impl=bump_activity, tsr_ref=bump_activity_ref, name="Bump activities")
+    
+    check_tensor_match(tsr_impl=bump_activity, tsr_ref=bump_activity_ref, name="bump_history")
+
+    check_tensor_match(predicted_cosine_wave, predicted_cosine_wave_ref, "r_history", rtol=5e-5, atol=5e-5)
 
     print("---------------------------------------------------------------------")
-    print("Predicted_cosine_wave: ")
-    print("ref : ", predicted_cosine_wave_ref[0, 0, :10].cpu().numpy())
-    print("impl: ", predicted_cosine_wave[0, 0, :10].cpu().numpy())
-    print("Bump_activity: ")
+
+    print("bump_history: ")
     print("ref : ", bump_activity_ref[0, 0, :10].cpu().numpy())
     print("impl: ", bump_activity[0, 0, :10].cpu().numpy())
+
+    print("r_history: ")
+    print("ref : ", predicted_cosine_wave_ref[0, 0, :10].cpu().numpy())
+    print("impl: ", predicted_cosine_wave[0, 0, :10].cpu().numpy())
 
 if __name__ == "__main__":
 
