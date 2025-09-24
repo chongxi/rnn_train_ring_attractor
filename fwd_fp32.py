@@ -297,8 +297,12 @@ def process_ring_attractor_sequence_cuda4(action_signal, r, J0, J1, Wo, Wa, W_de
     
     # Pre-allocate W_eff tensor
     W_eff = torch.zeros_like(Wa_weighted) # 
-    r_history = torch.zeros(torch.Size([1, 128, 256]), device='cuda', dtype=torch.float32)
-    bump_history = torch.zeros(torch.Size([1, 128, 256]), device='cuda', dtype=torch.float32)
+
+    r_history = torch.zeros(torch.Size([batch_size, seq_len, 256]), device='cuda', dtype=torch.float32)
+    bump_history = torch.zeros(torch.Size([batch_size, seq_len, 256]), device='cuda', dtype=torch.float32)
+
+    # r_history = torch.zeros(torch.Size([1, 128, 256]), device='cuda', dtype=torch.float32)
+    # bump_history = torch.zeros(torch.Size([1, 128, 256]), device='cuda', dtype=torch.float32)
 
     module.torch_sum(
         A=A, 
@@ -518,7 +522,7 @@ if __name__ == "__main__":
 
     training_steps = 10
     learning_rate = 1e-3
-    batch_size = 1
+    batch_size = 8
 
     benchmark(num_neurons=num_neurons, seq_len=seq_len, action_dim=action_dim, batch_size=batch_size) 
 

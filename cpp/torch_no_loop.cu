@@ -40,7 +40,7 @@ void torch_sum_cuda(
 );
 
 __global__ void persistent_splitK_kernel(
-    const float* A, // shape [1, 128, 32]
+    const float* A, // shape [batch_size, 128, 32]
     const float* Wa, // shape [32, 256, 256]
     const float* J0, // shape [256, 256]
     float J1,
@@ -59,7 +59,9 @@ __global__ void persistent_splitK_kernel(
     __shared__ float re_inp_buf[256];
     __shared__ float r_d7_buf[256];
 
-    r_buf[threadIdx.x] = r[threadIdx.x];
+    int batch_idx = blockIdx.x;
+    
+    r_buf[threadIdx.x] = r[batch_idx * N + threadIdx.x];
 
     constexpr float kBetaVec = M_SQRT2 * M_2_SQRTPI * 0.5f;
 
@@ -72,11 +74,10 @@ __global__ void persistent_splitK_kernel(
 
         __syncthreads();
 
-        // Compute recurrent input
         for (int k_idx = 0; k_idx < N; ++k_idx){
             float wa_weighted = 0.f;
             for (int action = 0; action < a_dim; ++action){
-                wa_weighted += A[t * a_dim + action] * Wa[action * N * N + row_idx * N + k_idx];
+                wa_weighted += A[batch_idx * seq_len * a_dim + t * a_dim + action] * Wa[action * N * N + row_idx * N + k_idx];
             }
             
             float w_eff = J0[row_idx * N + k_idx] + J1 * Wo[row_idx * N + k_idx] + wa_weighted;
@@ -85,19 +86,17 @@ __global__ void persistent_splitK_kernel(
 
         __syncthreads();
 
-        // Apply activation and update r
         float re_inp_act = re_inp_buf[threadIdx.x];
         float re_inp_val = 0.5f * re_inp_act * (1.f + tanhf(kBetaVec * fmaf(0.044715f, re_inp_act * re_inp_act * re_inp_act, re_inp_act)));
         
         float alpha = 0.15f;
         float r_updated = (1.f - alpha) * r_buf[threadIdx.x] + alpha * re_inp_val;
 
-        bump_history[t * N + threadIdx.x] = r_updated;
+        bump_history[batch_idx * seq_len * N + t * N + threadIdx.x] = r_updated;
         r_buf[threadIdx.x] = r_updated;
 
         __syncthreads();
 
-        // Compute r @ W_delta7 (correct matrix multiplication) 
         for (int k_idx = 0; k_idx < N; ++k_idx){
             atomicAdd(&r_d7_buf[threadIdx.x], r_buf[k_idx] * W_delta7[k_idx * N + threadIdx.x]);
         }
@@ -114,7 +113,7 @@ __global__ void persistent_splitK_kernel(
             __syncthreads();
         }
         
-        r_history[t * N + threadIdx.x] = r_d7_lane / r_d7_buf[0];
+        r_history[batch_idx * seq_len * N + t * N + threadIdx.x] = r_d7_lane / r_d7_buf[0];
 
     } // end for t
 }
