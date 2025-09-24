@@ -17,7 +17,8 @@ void torch_sum_cuda(
     void* re_inp,
     int N,
     int a_dim,
-    int seq_len
+    int seq_len,
+    int batch_size
 );
 
 void torch_sum(
@@ -55,7 +56,8 @@ void torch_sum(
         re_inp.data_ptr(),
         N, 
         a_dim,
-        seq_len);
+        seq_len,
+        batch_size);
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
