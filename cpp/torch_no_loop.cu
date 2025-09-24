@@ -381,10 +381,10 @@ __global__ void persistent_splitK_batch_kernel(
     __shared__ float r_d7_buf[256];
 
     int batch_idx = blockIdx.x;
-    int thread_idx = threadIdx.x;
+    int t_idx = threadIdx.x;
     
     // Load initial r for this batch
-    r_buf[thread_idx] = r[batch_idx * N + thread_idx];
+    r_buf[t_idx] = r[batch_idx * N + t_idx];
 
     __syncthreads();
 
@@ -392,8 +392,8 @@ __global__ void persistent_splitK_batch_kernel(
     
     for (int t = 0; t < seq_len; ++t){
 
-        re_inp_buf[thread_idx] = 0.f;
-        r_d7_buf[thread_idx] = 0.f;
+        re_inp_buf[t_idx] = 0.f;
+        r_d7_buf[t_idx] = 0.f;
 
         __syncthreads();
 
@@ -403,38 +403,38 @@ __global__ void persistent_splitK_batch_kernel(
             for (int action = 0; action < a_dim; ++action){
                 // Access A for current batch
                 wa_weighted += A[batch_idx * seq_len * a_dim + t * a_dim + action] * 
-                              Wa[action * N * N + thread_idx * N + k_idx];
+                              Wa[action * N * N + t_idx * N + k_idx];
             } // end for action            
 
-            float w_eff = J0[thread_idx * N + k_idx] + J1 * Wo[thread_idx * N + k_idx] + wa_weighted;
+            float w_eff = J0[t_idx * N + k_idx] + J1 * Wo[t_idx * N + k_idx] + wa_weighted;
 
-            atomicAdd(&re_inp_buf[thread_idx], w_eff * r_buf[k_idx]);
+            atomicAdd(&re_inp_buf[t_idx], w_eff * r_buf[k_idx]);
 
         } // end for k_idx
 
         __syncthreads();
 
-        float re_inp_act = re_inp_buf[thread_idx];
+        float re_inp_act = re_inp_buf[t_idx];
         float re_inp_val = 0.5f * re_inp_act * (1.f + tanhf(kBetaVec * fmaf(0.044715f, re_inp_act * re_inp_act * re_inp_act, re_inp_act)));
         
         float alpha = 0.15f;
-        float r_updated = (1.f - alpha) * r_buf[thread_idx] + alpha * re_inp_val;
+        float r_updated = (1.f - alpha) * r_buf[t_idx] + alpha * re_inp_val;
 
         // Store to batch-specific location
-        bump_history[batch_idx * seq_len * N + t * N + thread_idx] = r_updated;
+        bump_history[batch_idx * seq_len * N + t * N + t_idx] = r_updated;
 
         for (int k_idx = 0; k_idx < N; ++k_idx){
-            atomicAdd(&r_d7_buf[thread_idx], r_updated * W_delta7[k_idx * N + thread_idx]);
+            atomicAdd(&r_d7_buf[t_idx], r_updated * W_delta7[k_idx * N + t_idx]);
         }// end for k_idx
 
         __syncthreads();
 
-        float r_d7_lane = r_d7_buf[thread_idx];
-        r_buf[thread_idx] = r_updated;
+        float r_d7_lane = r_d7_buf[t_idx];
+        r_buf[t_idx] = r_updated;
         
         for (int offset = 128; offset >= 1; offset /= 2) {
-            if (thread_idx < offset) {
-                r_d7_buf[thread_idx] = fmaxf(r_d7_buf[thread_idx], r_d7_buf[thread_idx + offset]);
+            if (t_idx < offset) {
+                r_d7_buf[t_idx] = fmaxf(r_d7_buf[t_idx], r_d7_buf[t_idx + offset]);
             }
             __syncthreads();
         } // for offset
@@ -445,7 +445,7 @@ __global__ void persistent_splitK_batch_kernel(
         // }
 
         // Store to batch-specific location
-        r_history[batch_idx * seq_len * N + t * N + thread_idx] = r_d7_lane / r_d7_buf[0];
+        r_history[batch_idx * seq_len * N + t * N + t_idx] = r_d7_lane / r_d7_buf[0];
 
     } // end for t
 }
