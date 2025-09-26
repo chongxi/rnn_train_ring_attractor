@@ -9,7 +9,7 @@ Watch how the network learns three essential circuits:
 - **W_L (Left Turn)**: Activated by left turn motor signals, rotates the bump counterclockwise to track leftward movement
 - **W_R (Right Turn)**: Activated by right turn motor signals, rotates the bump clockwise to track rightward movement
 
-![Weight Evolution](ring_attractor_weights_evolution.gif)
+![Weight Evolution](assets/ring_attractor_weights_evolution.gif)
 
 ## Overview
 
