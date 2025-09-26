@@ -305,6 +305,9 @@ def process_ring_attractor_sequence_cuda4(action_signal, r, J0, J1, Wo, Wa, W_de
     # r_history = torch.zeros(torch.Size([1, 128, 256]), device='cuda', dtype=torch.float32)
     # bump_history = torch.zeros(torch.Size([1, 128, 256]), device='cuda', dtype=torch.float32)
 
+    # A_expanded = action_signal.unsqueeze(-1).unsqueeze(-1)  # (batch, seq, action_dim, 1, 1)
+    # Wa_all = torch.sum(A_expanded * Wa.unsqueeze(0).unsqueeze(0), dim=2)  # (batch, seq, N, N)
+
     module.torch_sum(
         A=A, 
         Wa=Wa,
@@ -383,7 +386,7 @@ class GeneralizedRingAttractorNoGain(nn.Module):
         return process_ring_attractor_sequence_cuda4(action_signal, r, self.J0, self.J1, self.Wo, self.Wa, self.W_delta7, self.activation_name, Wa_weighted, recurrent_input, r_delta7)       
         
 
-def benchmark(num_neurons=120, seq_len=120, action_dim=2, batch_size=32):
+def benchmark(num_neurons=512, seq_len=128, action_dim=32, batch_size=8, activation='gelu'):
     assert torch.cuda.is_available(), "CUDA GPU not detected. Exiting."
     device = torch.device("cuda")
 
@@ -407,7 +410,7 @@ def benchmark(num_neurons=120, seq_len=120, action_dim=2, batch_size=32):
         action_dim=action_dim,
         tau=10,
         dt=1,
-        activation='gelu',
+        activation=activation,
         initialization='random',
         device=device
     )
@@ -425,7 +428,7 @@ def benchmark(num_neurons=120, seq_len=120, action_dim=2, batch_size=32):
         action_dim=action_dim,
         tau=10,
         dt=1,
-        activation='gelu',
+        activation=activation,
         initialization='random',
         device=device
     )
@@ -435,14 +438,14 @@ def benchmark(num_neurons=120, seq_len=120, action_dim=2, batch_size=32):
     for param in ring_rnn_ref.parameters():
         param.requires_grad = False
 
-    print("--------------- Model params ----------------------")
+    # print("--------------- Model params ----------------------")
 
-    print("J0:", ring_rnn.J0.shape, ring_rnn.J0.dtype, ring_rnn.J0.device) 
-    print("W_delta7:", ring_rnn.W_delta7.shape, ring_rnn.W_delta7.dtype, ring_rnn.W_delta7.device)
-    print("Wo:", ring_rnn.Wo.shape, ring_rnn.Wo.dtype, ring_rnn.Wo.device)
-    print("Wa:", ring_rnn.Wa.shape, ring_rnn.Wa.dtype, ring_rnn.Wa.device)
+    # print("J0:", ring_rnn.J0.shape, ring_rnn.J0.dtype, ring_rnn.J0.device) 
+    # print("W_delta7:", ring_rnn.W_delta7.shape, ring_rnn.W_delta7.dtype, ring_rnn.W_delta7.device)
+    # print("Wo:", ring_rnn.Wo.shape, ring_rnn.Wo.dtype, ring_rnn.Wo.device)
+    # print("Wa:", ring_rnn.Wa.shape, ring_rnn.Wa.dtype, ring_rnn.Wa.device)
 
-    print("--------------- Data params ----------------------")
+    # print("--------------- Data params ----------------------")
 
     av_signal, target_angle = dataset.generate_batch(batch_size)
 
@@ -455,10 +458,10 @@ def benchmark(num_neurons=120, seq_len=120, action_dim=2, batch_size=32):
 
 
 
-    print("av_signal:", av_signal_fp32.shape, av_signal_fp32.dtype, av_signal_fp32.device)
-    print("target_angle:", target_angle_fp32.shape, target_angle_fp32.dtype, target_angle_fp32.device)
-    print("r_init_fp32:", r_init_fp32.shape, r_init_fp32.dtype, r_init_fp32.device)
-    print("initial_angle:", initial_angle_fp32.shape, initial_angle_fp32.dtype, initial_angle_fp32.device)
+    # print("av_signal:", av_signal_fp32.shape, av_signal_fp32.dtype, av_signal_fp32.device)
+    # print("target_angle:", target_angle_fp32.shape, target_angle_fp32.dtype, target_angle_fp32.device)
+    # print("r_init_fp32:", r_init_fp32.shape, r_init_fp32.dtype, r_init_fp32.device)
+    # print("initial_angle:", initial_angle_fp32.shape, initial_angle_fp32.dtype, initial_angle_fp32.device)
 
     
 
@@ -473,7 +476,7 @@ def benchmark(num_neurons=120, seq_len=120, action_dim=2, batch_size=32):
     print("--------------- Check correctness ----------------------")
     # def check_tensor_match(tsr_impl, tsr_ref, name, rtol=0.01, atol=0.0001, max_print=10):
     
-    def check_tensor_match(tsr_impl, tsr_ref, name, rtol=1e-5, atol=1e-8, max_print=10):
+    def check_tensor_match(tsr_impl, tsr_ref, name, rtol=1e-5, atol=1e-8, max_print=20):
         if not torch.allclose(tsr_impl, tsr_ref, rtol=rtol, atol=atol):
             print(f"\n{name} differences: a_tol = {atol}, r_tol = {rtol}")
             diff = (tsr_impl - tsr_ref).abs()
@@ -482,16 +485,24 @@ def benchmark(num_neurons=120, seq_len=120, action_dim=2, batch_size=32):
             num_mismatched = mismatch.sum().item()
             total_elements = tsr_impl.numel()
             percentage = (num_mismatched / total_elements) * 100
-            indices = torch.nonzero(mismatch)[:max_print]
+            all_indices = torch.nonzero(mismatch)
+            first_indices = all_indices[:max_print]
+            last_indices = all_indices[-max_print:] if len(all_indices) > max_print else torch.empty(0, 3, dtype=torch.long)
             
             print("Mismatch at                 ref         impl        diff        rdiff")
             print("---------------------------------------------------------------------")
-            for idx in indices:
+            print("First mismatches:")
+            for idx in first_indices:
                 b, t, n = idx
                 print(f"[batch={b:2d},t={t:3d},n={n:3d}]: {tsr_ref[b,t,n]:10.6f} {tsr_impl[b,t,n]:10.6f} {diff[b,t,n]:10.6f} {rdiff[b,t,n]:10.6f}")
             
-            if num_mismatched > max_print:
+            if len(all_indices) > max_print:
                 print("...")
+                print("Last mismatches:")
+                for idx in last_indices:
+                    b, t, n = idx
+                    print(f"[batch={b:2d},t={t:3d},n={n:3d}]: {tsr_ref[b,t,n]:10.6f} {tsr_impl[b,t,n]:10.6f} {diff[b,t,n]:10.6f} {rdiff[b,t,n]:10.6f}")
+            
             print(f"Total mismatched elements: {num_mismatched} out of {total_elements} ({percentage:.1f}%)")
             print(f"diff: {diff.mean():.6f} ± {diff.std():.6f}")
             print(f"rdiff: {rdiff.mean():.6f} ± {rdiff.std():.6f}")
@@ -505,9 +516,10 @@ def benchmark(num_neurons=120, seq_len=120, action_dim=2, batch_size=32):
     
     check_tensor_match(tsr_impl=bump_activity, tsr_ref=bump_activity_ref, name="bump_history")
 
-    check_tensor_match(predicted_cosine_wave, predicted_cosine_wave_ref, "r_history", rtol=1e-3, atol=1e-4)
+    check_tensor_match(predicted_cosine_wave, predicted_cosine_wave_ref, "r_history", rtol=1e-4, atol=1e-6)
+    # check_tensor_match(predicted_cosine_wave, predicted_cosine_wave_ref, "r_history")
 
-    print("---------------------------------------------------------------------")
+    # print("---------------------------------------------------------------------")
 
     print("bump_history: ")
     print("ref : ", bump_activity_ref[0, 0, :10].cpu().numpy())
@@ -517,17 +529,63 @@ def benchmark(num_neurons=120, seq_len=120, action_dim=2, batch_size=32):
     print("ref : ", predicted_cosine_wave_ref[0, 0, :10].cpu().numpy())
     print("impl: ", predicted_cosine_wave[0, 0, :10].cpu().numpy())
 
+    def measure_latency_cuda(fn, *args, n_warmup=2, n_iters=20, **kwargs):
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+
+        # Warmup
+        for _ in range(n_warmup):
+            fn(*args, **kwargs)
+        torch.cuda.synchronize()
+
+        times = []
+        for _ in range(n_iters):
+            start_event.record()
+            fn(*args, **kwargs)
+            end_event.record()
+
+            torch.cuda.synchronize()
+            times.append(start_event.elapsed_time(end_event))  # ms
+
+        times = torch.tensor(times, device="cpu")
+        mean = times.mean().item()
+        std = times.std(unbiased=False).item()
+        return f"{mean:.3f} ± {std:.3f} ms"
+    
+    print("---------------------------------------------------------------------")
+
+    # with torch.no_grad():
+
+    #     lat_ring_rnn = measure_latency_cuda(ring_rnn, av_signal_fp32, r_init=r_init_impl)
+    #     lat_ring_rnn_ref = measure_latency_cuda(ring_rnn_ref, av_signal_fp32, r_init=r_init_ref)
+
+    #     print("ring_rnn latency:", lat_ring_rnn)
+    #     print("ring_rnn_ref latency:", lat_ring_rnn_ref)
+
+
 if __name__ == "__main__":
 
     # --- Training Parameters ---
-    num_neurons = 288
+    num_neurons = 512
     seq_len = 128
     action_dim = 32
+    activation = 'relu'
 
     training_steps = 10
     learning_rate = 1e-3
-    batch_size = 8
+    batch_size = 1
 
-    benchmark(num_neurons=num_neurons, seq_len=seq_len, action_dim=action_dim, batch_size=batch_size) 
+    seq_len_list = [4, 8, 16, 32, 128, 256, 512, 1024, 2048]
+    # seq_len_list = [4, 8, 16, 32, 128, 256]
+    batch_size_list = [32, 128, 256, 512, 1024, 2048]
+    action_dim_list = [2, 4, 8, 32, 128, 256, 512, 1024]
+
+    # for seq_len in seq_len_list:
+    # for batch_size in batch_size_list:
+    # for action_dim in action_dim_list:
+    #     print(f"batch_size: {batch_size} num_neurons: {num_neurons}, action dim: {action_dim}, seq_len {seq_len}: ")
+    #     benchmark(num_neurons=num_neurons, seq_len=seq_len, action_dim=action_dim, batch_size=batch_size, activation=activation) 
+
+    benchmark(num_neurons=num_neurons, seq_len=seq_len, action_dim=action_dim, batch_size=batch_size, activation=activation) 
 
 

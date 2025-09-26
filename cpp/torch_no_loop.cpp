@@ -41,6 +41,10 @@ void torch_sum(
     int batch_size = sizes[0], seq_len = sizes[1], a_dim = sizes[2];
     int N = Wa.size(1);
 
+    // auto sizes = A.sizes();
+    // int batch_size = sizes[0], seq_len = sizes[1], N = sizes[2];
+    // int a_dim = 0;    
+
     torch_sum_cuda(
         A.data_ptr(), 
         Wa.data_ptr(),
