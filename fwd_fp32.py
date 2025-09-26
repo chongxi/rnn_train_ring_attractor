@@ -566,8 +566,8 @@ def benchmark(num_neurons=512, seq_len=128, action_dim=32, batch_size=8, activat
 if __name__ == "__main__":
 
     # --- Training Parameters ---
-    num_neurons = 512
-    seq_len = 128
+    num_neurons = 256
+    seq_len = 1
     action_dim = 32
     activation = 'relu'
 
@@ -586,6 +586,7 @@ if __name__ == "__main__":
     #     print(f"batch_size: {batch_size} num_neurons: {num_neurons}, action dim: {action_dim}, seq_len {seq_len}: ")
     #     benchmark(num_neurons=num_neurons, seq_len=seq_len, action_dim=action_dim, batch_size=batch_size, activation=activation) 
 
+    print(f"batch_size: {batch_size} num_neurons: {num_neurons}, action dim: {action_dim}, seq_len {seq_len}: ")
     benchmark(num_neurons=num_neurons, seq_len=seq_len, action_dim=action_dim, batch_size=batch_size, activation=activation) 
 
 
