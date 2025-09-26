@@ -43,8 +43,8 @@ if force_rebuild:
         file.unlink()
 
 module = load(
-    name='torch_sum',
-    sources=[f"{dir_path}/cpp/torch_no_loop.cu", f"{dir_path}/cpp/torch_no_loop.cpp"],
+    name='fwd',
+    sources=[f"{dir_path}/cpp/fwd.cu", f"{dir_path}/cpp/fwd.cpp"],
     verbose=True,
     build_directory=build_dir 
 )
@@ -169,73 +169,6 @@ def av_to_action_signal_ND(av_signal, action_dim=2):
     
     return action_signal
 
-
-def torch_sum(A_t, Wa, Wa_weighted):
-
-    # Batch size = 1
-    A_t_expanded = A_t.unsqueeze(-1).unsqueeze(-1)
-    Wa_weighted.copy_(torch.sum(A_t_expanded * Wa.unsqueeze(0), dim=1))
-
-def process_ring_attractor_sequence_cuda3(action_signal, r, J0, J1, Wo, Wa, W_delta7, activation_name, Wa_weighted, recurrent_input, r_delta7):
-    batch_size, seq_len, action_dim = action_signal.shape
-    bump_history = []
-    r_history = []
-    A = action_signal  # (batch, seq, action_dim)
-    
-    # Pre-allocate W_eff tensor
-    W_eff = torch.zeros_like(Wa_weighted)
-    r_history = torch.zeros(torch.Size([1, 128, 256]), device='cuda', dtype=torch.float32)
-    bump_history = torch.zeros(torch.Size([1, 128, 256]), device='cuda', dtype=torch.float32)
-
-    for t in range(seq_len):
-        # Get action vector at time t
-        A_t = A[:, t, :]  # (batch, action_dim)
-        # A_t_expanded = A_t.unsqueeze(-1).unsqueeze(-1)
-        # Wa_weighted.copy_(torch.sum(A_t_expanded * Wa.unsqueeze(0), dim=1))
-
-        # torch_sum(A_t, Wa, Wa_weighted)
-        # module.torch_sum(A_t, Wa, Wa_weighted)
-
-        module.torch_sum(
-            A_t=A_t, 
-            Wa=Wa,
-            J0=J0,
-            J1=J1,
-            Wo=Wo,
-            r=r,
-            Wa_weighted=Wa_weighted,
-            re_inp=recurrent_input,
-            W_eff=W_eff,
-            t=t,
-            bump_history=bump_history,
-            r_delta7=r_delta7,
-            r_history=r_history
-        )
-
-        # W_eff = J0 + J1 * Wo
-
-        # W_eff2 = W_eff + Wa_weighted
-
-
-
-        # recurrent_input.copy_((W_eff @ r.unsqueeze(2)).squeeze(2))
-        # recurrent_input = non_linear(recurrent_input, activation_name)
-
-        # alpha = 0.15
-        # r = r * (1 - alpha) + recurrent_input * alpha
-        # bump_history[0, t, :] = r.squeeze(0)
-
-        r_delta7 = r @ W_delta7
-        r_max = r_delta7.max(dim=1, keepdim=True)[0]
-        r_delta7 = r_delta7 / r_max
-
-        # r_history.append(r_delta7)
-        r_history[0, t, :] = r_delta7.squeeze(0)
-
-    # return torch.stack(r_history, dim=1), torch.stack(bump_history, dim=1)
-    return r_history, bump_history
-
-
 def process_ring_attractor_sequence_cuda4(action_signal, r, J0, J1, Wo, Wa, W_delta7, activation_name, Wa_weighted, recurrent_input, r_delta7):
     """Process entire sequence of ring attractor dynamics.
     
@@ -297,7 +230,6 @@ def process_ring_attractor_sequence_cuda4(action_signal, r, J0, J1, Wo, Wa, W_de
     N, _ = J0.shape
     
     # Pre-allocate W_eff tensor
-    W_eff = torch.zeros_like(Wa_weighted) # 
 
     r_history = torch.zeros(torch.Size([batch_size, seq_len, N]), device='cuda', dtype=torch.float32)
     bump_history = torch.zeros(torch.Size([batch_size, seq_len, N]), device='cuda', dtype=torch.float32)
@@ -308,7 +240,7 @@ def process_ring_attractor_sequence_cuda4(action_signal, r, J0, J1, Wo, Wa, W_de
     # A_expanded = action_signal.unsqueeze(-1).unsqueeze(-1)  # (batch, seq, action_dim, 1, 1)
     # Wa_all = torch.sum(A_expanded * Wa.unsqueeze(0).unsqueeze(0), dim=2)  # (batch, seq, N, N)
 
-    module.torch_sum(
+    module.fwd(
         A=A, 
         Wa=Wa,
         J0=J0,
@@ -316,11 +248,8 @@ def process_ring_attractor_sequence_cuda4(action_signal, r, J0, J1, Wo, Wa, W_de
         Wo=Wo,        
         r=r,
         W_delta7=W_delta7,  
-        W_eff=W_eff,
         bump_history=bump_history,
-        r_delta7=r_delta7,
         r_history=r_history,
-        re_inp=recurrent_input
     )
 
     return r_history, bump_history
@@ -358,6 +287,7 @@ class GeneralizedRingAttractorNoGain(nn.Module):
                        dtype=torch.float32) / self.num_neurons ** 0.5)
 
 
+
     def forward(self, action_signal, r_init=None, ref=True):
         """
         Pre-allocates memory for tensors to reduce GPU memory fragmentation.
@@ -377,14 +307,23 @@ class GeneralizedRingAttractorNoGain(nn.Module):
         else:
             r = r_init
 
-
         # Pre-allocate intermediate tensors
-        Wa_weighted = torch.zeros(batch_size, N, N, device=self.Wo.device, dtype=self.Wa.dtype)
-        recurrent_input = torch.zeros(batch_size, N, device=self.Wo.device, dtype=r.dtype)
-        r_delta7 = torch.zeros(batch_size, N, device=self.Wo.device, dtype=r.dtype)
+        r_history = torch.zeros(torch.Size([batch_size, seq_len, N]), device='cuda', dtype=torch.float32)
+        bump_history = torch.zeros(torch.Size([batch_size, seq_len, N]), device='cuda', dtype=torch.float32)        
 
-        return process_ring_attractor_sequence_cuda4(action_signal, r, self.J0, self.J1, self.Wo, self.Wa, self.W_delta7, self.activation_name, Wa_weighted, recurrent_input, r_delta7)       
+        module.fwd(
+            A=action_signal, 
+            Wa=self.Wa,
+            J0=self.J0,
+            J1=self.J1,
+            Wo=self.Wo,        
+            r=r,
+            W_delta7=self.W_delta7,  
+            bump_history=bump_history,
+            r_history=r_history,
+        )       
         
+        return r_history, bump_history
 
 def benchmark(num_neurons=512, seq_len=128, action_dim=32, batch_size=8, activation='gelu'):
     assert torch.cuda.is_available(), "CUDA GPU not detected. Exiting."
