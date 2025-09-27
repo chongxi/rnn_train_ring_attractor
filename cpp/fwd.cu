@@ -92,9 +92,7 @@ __global__ void __cluster_dims__(CLUSTER_SIZE, 1, 1) persistent_splitK_tbc_kerne
             // re_inp_buf[threadIdx.x] += w_eff * r_buf[k_idx];
         }
 
-
-        // __syncthreads();
-        this_cluster.sync();
+        // this_cluster.sync();
 
         if (this_cluster.block_rank() == 0) {
 
@@ -108,14 +106,21 @@ __global__ void __cluster_dims__(CLUSTER_SIZE, 1, 1) persistent_splitK_tbc_kerne
 
             bump_history[batch_idx * seq_len * N + t * N + threadIdx.x] = r_updated;
             r_buf[threadIdx.x] = r_updated;
+        }
+        this_cluster.sync();
 
-            __syncthreads();
+        for (int k_idx_local = 0; k_idx_local < N / CLUSTER_SIZE; ++k_idx_local){
+            int k_idx = this_cluster.block_rank() * (N / CLUSTER_SIZE) + k_idx_local;
+            
+            float* dst_smem = this_cluster.map_shared_rank(r_d7_buf, 0);
+            float* src_r_buf = this_cluster.map_shared_rank(r_buf, 0);
+            
+            atomicAdd(dst_smem + threadIdx.x, src_r_buf[k_idx] * W_delta7[k_idx * N + threadIdx.x]);
+        }
 
-            for (int k_idx = 0; k_idx < N; ++k_idx){
-                atomicAdd(&r_d7_buf[threadIdx.x], r_buf[k_idx] * W_delta7[k_idx * N + threadIdx.x]);
-            }
+        this_cluster.sync();
 
-            __syncthreads();
+        if (this_cluster.block_rank() == 0) {
 
             float r_d7_lane = r_d7_buf[threadIdx.x];
 
