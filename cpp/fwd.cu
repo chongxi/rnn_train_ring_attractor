@@ -1,12 +1,6 @@
-#include <cuda_runtime.h>
-#include <cooperative_groups.h>
-#include <iostream>
-
-#define WARP_SIZE 32
-#define BLOCK_SIZE 256
-#define CLUSTER_SIZE 8
-
-namespace cg = cooperative_groups;
+#include "cuda_common.cuh"
+#include "kernels/fwd_hardcode.cu"
+// #include "kernels/fwd_128.cu"
 
 #define CHECK_CUDA_ERROR(val) check((val), #val, __FILE__, __LINE__)
 void check(cudaError_t err, char const* func, char const* file, int line)
@@ -22,133 +16,38 @@ void check(cudaError_t err, char const* func, char const* file, int line)
 void fwd_cuda(
     void* A,
     void* Wa,
-    void* J0,
+    // void* J0,
+    float J0,
     float J1,
     void* Wo,
-    void* r, // init value for r
+    void* r_init,
     void* W_delta7,
     void* bump_history,
     void* r_history,
+    float alpha,
     int N,
     int a_dim,
     int seq_len,
     int batch_size
 );
 
-__global__ void __cluster_dims__(CLUSTER_SIZE, 1, 1) persistent_splitK_tbc_kernel(
-    const float* A, // shape [batch_size, 128, 32]
-    const float* Wa, // shape [32, 256, 256]
-    const float* J0, // shape [256, 256]
-    float J1,
-    const float* Wo,
-    float* r,
-    const float* W_delta7,
-    float* bump_history,
-    float* r_history,
-    int N,
-    int a_dim,
-    int seq_len
-){  
-    auto this_cluster = cg::this_cluster();
 
-    __shared__ float r_buf[BLOCK_SIZE];
-    __shared__ float re_inp_buf[BLOCK_SIZE];
-    __shared__ float r_d7_buf[BLOCK_SIZE];
 
-    int batch_idx = blockIdx.x / CLUSTER_SIZE;
-    
-    r_buf[threadIdx.x] = r[batch_idx * N + threadIdx.x];
 
-    // constexpr float kBetaVec = M_SQRT2 * M_2_SQRTPI * 0.5f;
 
-    int row_idx = threadIdx.x;
-    
-    for (int t = 0; t < seq_len; ++t){
-
-        re_inp_buf[threadIdx.x] = 0.f;
-        r_d7_buf[threadIdx.x] = 0.f;
-
-        // __syncthreads();
-        this_cluster.sync();
-
-        // Reduce results to the smem of the first block in a threadblock cluster
-
-        for (int k_idx_local = 0; k_idx_local < N / CLUSTER_SIZE; ++k_idx_local){
-
-            int k_idx = this_cluster.block_rank() * CLUSTER_SIZE + k_idx_local;
-
-            float wa_weighted = 0.f;
-            for (int action = 0; action < a_dim; ++action){
-                wa_weighted += A[batch_idx * seq_len * a_dim + t * a_dim + action] * Wa[action * N * N + row_idx * N + k_idx];
-            }
-            
-            float w_eff = J0[row_idx * N + k_idx] + J1 * Wo[row_idx * N + k_idx] + wa_weighted;
-
-            //Pointer to target block shared memory (first block)
-            float* dst_smem = this_cluster.map_shared_rank(re_inp_buf, 0);
-            float* src_r_buf = this_cluster.map_shared_rank(r_buf, 0);
-
-            atomicAdd(dst_smem + threadIdx.x, w_eff * src_r_buf[k_idx]);
-            // re_inp_buf[threadIdx.x] += w_eff * r_buf[k_idx];
-        }
-
-        // this_cluster.sync();
-
-        if (this_cluster.block_rank() == 0) {
-
-            float re_inp_act = re_inp_buf[threadIdx.x];
-            // float re_inp_val = 0.5f * re_inp_act * (1.f + tanhf(kBetaVec * fmaf(0.044715f, re_inp_act * re_inp_act * re_inp_act, re_inp_act)));
-
-            float re_inp_val = fmax(re_inp_act, 0.f);
-            
-            float alpha = 0.15f;
-            float r_updated = (1.f - alpha) * r_buf[threadIdx.x] + alpha * re_inp_val;
-
-            bump_history[batch_idx * seq_len * N + t * N + threadIdx.x] = r_updated;
-            r_buf[threadIdx.x] = r_updated;
-        }
-        this_cluster.sync();
-
-        for (int k_idx_local = 0; k_idx_local < N / CLUSTER_SIZE; ++k_idx_local){
-            int k_idx = this_cluster.block_rank() * (N / CLUSTER_SIZE) + k_idx_local;
-            
-            float* dst_smem = this_cluster.map_shared_rank(r_d7_buf, 0);
-            float* src_r_buf = this_cluster.map_shared_rank(r_buf, 0);
-            
-            atomicAdd(dst_smem + threadIdx.x, src_r_buf[k_idx] * W_delta7[k_idx * N + threadIdx.x]);
-        }
-
-        this_cluster.sync();
-
-        if (this_cluster.block_rank() == 0) {
-
-            float r_d7_lane = r_d7_buf[threadIdx.x];
-
-            // Fixed reduction for finding maximum
-            for (int offset = BLOCK_SIZE / 2; offset > 0; offset /= 2) {
-                if (threadIdx.x < offset) {
-                    r_d7_buf[threadIdx.x] = fmaxf(r_d7_buf[threadIdx.x], r_d7_buf[threadIdx.x + offset]);
-                }
-                __syncthreads();
-            }
-            
-            r_history[batch_idx * seq_len * N + t * N + threadIdx.x] = r_d7_lane / r_d7_buf[0];
-
-        }
-
-    } // end for t
-}
 
 void fwd_cuda(
     void* A,
     void* Wa,
-    void* J0,
+    // void* J0,
+    float J0,
     float J1,
     void* Wo,
-    void* r, // init value for r
+    void* r_init,
     void* W_delta7,
     void* bump_history,
     void* r_history,
+    float alpha,
     int N,
     int a_dim,
     int seq_len,
@@ -156,23 +55,74 @@ void fwd_cuda(
 ){
     dim3 blockSize, gridSize;
 
-    blockSize = BLOCK_SIZE; gridSize = batch_size * CLUSTER_SIZE;
+    // blockSize = dim3(BLOCK_SIZE % 32, BLOCK_SIZE / 32); gridSize = dim3(N/TILE_DIM, batch_size);
+    // int num_neuron = N;
 
-    persistent_splitK_tbc_kernel<<<gridSize, blockSize>>>(
-        static_cast<const float*>(A),
-        static_cast<const float*>(Wa),
-        static_cast<const float*>(J0),
-        J1,
-        static_cast<const float*>(Wo),
-        static_cast<float*>(r),
-        static_cast<float *>(W_delta7),
-        static_cast<float *>(bump_history),
-        static_cast<float *>(r_history),
-        N,
-        a_dim,
-        seq_len       
-    );
-    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+    // optimized_tbc_kernel<<<gridSize, blockSize>>>(
+    //     static_cast<const float*>(A),
+    //     static_cast<const float*>(Wa),
+    //     // static_cast<const float*>(J0),
+    //     J0,
+    //     J1,
+    //     static_cast<const float*>(Wo),
+    //     static_cast<float*>(r_init),
+    //     static_cast<float *>(W_delta7),
+    //     static_cast<float *>(bump_history),
+    //     static_cast<float *>(r_history),
+    //     num_neuron,
+    //     a_dim,
+    //     batch_size       
+    // );
+    // CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+
+    // if (N == 128){
+    //     constexpr int BLOCK_SIZE = 512;
+    //     constexpr int CLUSTER_SIZE = 8;
+
+    //     blockSize = (BLOCK_SIZE % 32, BLOCK_SIZE / 32); gridSize = batch_size * CLUSTER_SIZE;
+
+    //     fwd_128_kernel<<<gridSize, blockSize>>>(
+    //         static_cast<const float*>(A),
+    //         static_cast<const float*>(Wa),
+    //         // static_cast<const float*>(J0),
+    //         J0,
+    //         J1,
+    //         static_cast<const float*>(Wo),
+    //         static_cast<float*>(r_init),
+    //         static_cast<float *>(W_delta7),
+    //         static_cast<float *>(bump_history),
+    //         static_cast<float *>(r_history),
+    //         alpha,
+    //         N,
+    //         a_dim,
+    //         seq_len       
+    //     );
+    // }
+
+    if (N == 256){
+        blockSize = 256; gridSize = batch_size * 8;
+
+        persistent_splitK_tbc_kernel<<<gridSize, blockSize>>>(
+            static_cast<const float*>(A),
+            static_cast<const float*>(Wa),
+            // static_cast<const float*>(J0),
+            J0,
+            J1,
+            static_cast<const float*>(Wo),
+            static_cast<float*>(r_init),
+            static_cast<float *>(W_delta7),
+            static_cast<float *>(bump_history),
+            static_cast<float *>(r_history),
+            alpha,
+            N,
+            a_dim,
+            seq_len       
+        );
+        CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+    }
+
+    
+
 
 }
 
@@ -228,7 +178,7 @@ void fwd_cuda(
 // }
 
 // __global__ void persistent_splitK_kernel(
-//     const float* A, // shape [batch_size, 128, 32]
+//     const float* A, // shape [BATCH_SIZE, 128, 32]
 //     const float* Wa, // shape [32, 256, 256]
 //     const float* J0, // shape [256, 256]
 //     float J1,
@@ -239,9 +189,9 @@ void fwd_cuda(
 //     float* bump_history,
 //     float* r_history,
 //     int N,
-//     int a_dim,
-//     int seq_len,
-//     int batch_size
+//     int A_DIM,
+//     int SEQ_LEN,
+//     int BATCH_SIZE
 // ){  
 //     __shared__ float r_buf[BLOCK_SIZE];
 //     __shared__ float re_inp_buf[BLOCK_SIZE];
@@ -255,7 +205,7 @@ void fwd_cuda(
 
 //     int row_idx = threadIdx.x;
     
-//     for (int t = 0; t < seq_len; ++t){
+//     for (int t = 0; t < SEQ_LEN; ++t){
 
 //         re_inp_buf[threadIdx.x] = 0.f;
 //         r_d7_buf[threadIdx.x] = 0.f;
@@ -264,8 +214,8 @@ void fwd_cuda(
 
 //         for (int k_idx = 0; k_idx < N / CLUSTER_SIZE; ++k_idx){
 //             float wa_weighted = 0.f;
-//             for (int action = 0; action < a_dim; ++action){
-//                 wa_weighted += A[batch_idx * seq_len * a_dim + t * a_dim + action] * Wa[action * N * N + row_idx * N + k_idx];
+//             for (int action = 0; action < A_DIM; ++action){
+//                 wa_weighted += A[batch_idx * SEQ_LEN * A_DIM + t * A_DIM + action] * Wa[action * N * N + row_idx * N + k_idx];
 //             }
             
 //             float w_eff = J0[row_idx * N + k_idx] + J1 * Wo[row_idx * N + k_idx] + wa_weighted;
@@ -284,7 +234,7 @@ void fwd_cuda(
 //         float alpha = 0.15f;
 //         float r_updated = (1.f - alpha) * r_buf[threadIdx.x] + alpha * re_inp_val;
 
-//         bump_history[batch_idx * seq_len * N + t * N + threadIdx.x] = r_updated;
+//         bump_history[batch_idx * SEQ_LEN * N + t * N + threadIdx.x] = r_updated;
 //         r_buf[threadIdx.x] = r_updated;
 
 //         __syncthreads();
@@ -305,7 +255,7 @@ void fwd_cuda(
 //             __syncthreads();
 //         }
         
-//         r_history[batch_idx * seq_len * N + t * N + threadIdx.x] = r_d7_lane / r_d7_buf[0];
+//         r_history[batch_idx * SEQ_LEN * N + t * N + threadIdx.x] = r_d7_lane / r_d7_buf[0];
 
 //     } // end for t
 // }

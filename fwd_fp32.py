@@ -275,8 +275,9 @@ class GeneralizedRingAttractorNoGain(nn.Module):
         self.register_buffer('W_delta7', torch.cos(angle_diff))
 
         # Fixed parameters with float32
-        self.J0 = -0.1 * torch.ones(self.num_neurons, self.num_neurons, 
-                                   device=self.device, dtype=torch.float32)
+        # self.J0 = -0.1 * torch.ones(self.num_neurons, self.num_neurons, device=self.device, dtype=torch.float32)
+
+        self.J0 = -0.1
         self.J1 = 0.1
 
         # Learnable parameters with float32
@@ -295,7 +296,7 @@ class GeneralizedRingAttractorNoGain(nn.Module):
         batch_size, seq_len, action_dim = action_signal.shape
         assert action_dim == self.action_dim, f"Expected action_dim {self.action_dim}, got {action_dim}"
 
-        self.J0 = self.J0.to(self.Wo.device)
+        # self.J0 = self.J0.to(self.Wo.device)
         self.W_delta7 = self.W_delta7.to(self.Wo.device)
 
         N = self.num_neurons
@@ -311,16 +312,19 @@ class GeneralizedRingAttractorNoGain(nn.Module):
         r_history = torch.zeros(torch.Size([batch_size, seq_len, N]), device='cuda', dtype=torch.float32)
         bump_history = torch.zeros(torch.Size([batch_size, seq_len, N]), device='cuda', dtype=torch.float32)        
 
+        alpha = 0.15
+
         module.fwd(
             A=action_signal, 
             Wa=self.Wa,
             J0=self.J0,
             J1=self.J1,
             Wo=self.Wo,        
-            r=r,
+            r_init=r,
             W_delta7=self.W_delta7,  
             bump_history=bump_history,
             r_history=r_history,
+            alpha=alpha
         )       
         
         return r_history, bump_history
