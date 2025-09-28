@@ -2,3 +2,5 @@ cpp/build
 **/__pycache__/
 build
 .vscode/
+dquery.cu
+dquery
