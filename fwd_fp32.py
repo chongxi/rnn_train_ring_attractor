@@ -20,7 +20,7 @@ print("========================================================")
 if not torch.cuda.is_available():
     raise RuntimeError("CUDA is not found")
 
-force_rebuild = False
+force_rebuild = True
 capability = torch.cuda.get_device_capability(torch.cuda.current_device())
 name = torch.cuda.get_device_name(torch.cuda.current_device())
 
@@ -42,11 +42,24 @@ if force_rebuild:
     for file in build_path.glob("*"):
         file.unlink()
 
+# module = load(
+#     name='fwd',
+#     sources=[f"{dir_path}/cpp/fwd.cu", f"{dir_path}/cpp/fwd.cpp"],
+#     verbose=True,
+#     build_directory=build_dir 
+# )
+
 module = load(
     name='fwd',
     sources=[f"{dir_path}/cpp/fwd.cu", f"{dir_path}/cpp/fwd.cpp"],
     verbose=True,
-    build_directory=build_dir 
+    build_directory=build_dir,
+    extra_cuda_cflags=[
+        # "-lineinfo",          # useful for profiling
+        "-Xptxas=-v",         # print register/shared memory usage
+        # "--ptxas-options=-v", # alternative syntax
+        "-keep"               # keep intermediate files (including .ptx and .cubin)
+    ]
 )
 
 

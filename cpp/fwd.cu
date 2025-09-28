@@ -1,6 +1,6 @@
 #include "cuda_common.cuh"
 #include "kernels/fwd_hardcode.cu"
-#include "kernels/fwd_n128_a2.cu"
+// #include "kernels/fwd_n128_a2.cu"
 
 #define CHECK_CUDA_ERROR(val) check((val), #val, __FILE__, __LINE__)
 void check(cudaError_t err, char const* func, char const* file, int line)
@@ -75,29 +75,29 @@ void fwd_cuda(
     // );
     // CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
-    if (N == 128 && a_dim == 2){
-        constexpr int BLOCK_SIZE = 512;
-        constexpr int CLUSTER_SIZE = 8;
+    // if (N == 128 && a_dim == 2){
+    //     constexpr int BLOCK_SIZE = 512;
+    //     constexpr int CLUSTER_SIZE = 8;
 
-        blockSize = (BLOCK_SIZE % 32, BLOCK_SIZE / 32); gridSize = batch_size * CLUSTER_SIZE;
+    //     blockSize = (BLOCK_SIZE % 32, BLOCK_SIZE / 32); gridSize = batch_size * CLUSTER_SIZE;
 
-        fwd_n128_a2_kernel<<<gridSize, blockSize>>>(
-            static_cast<const float*>(A),
-            static_cast<const float*>(Wa),
-            // static_cast<const float*>(J0),
-            J0,
-            J1,
-            static_cast<const float*>(Wo),
-            static_cast<float*>(r_init),
-            static_cast<float *>(W_delta7),
-            static_cast<float *>(bump_history),
-            static_cast<float *>(r_history),
-            alpha,
-            N,
-            a_dim,
-            seq_len       
-        );
-    }
+    //     fwd_n128_a2_kernel<<<gridSize, blockSize>>>(
+    //         static_cast<const float*>(A),
+    //         static_cast<const float*>(Wa),
+    //         // static_cast<const float*>(J0),
+    //         J0,
+    //         J1,
+    //         static_cast<const float*>(Wo),
+    //         static_cast<float*>(r_init),
+    //         static_cast<float *>(W_delta7),
+    //         static_cast<float *>(bump_history),
+    //         static_cast<float *>(r_history),
+    //         alpha,
+    //         N,
+    //         a_dim,
+    //         seq_len       
+    //     );
+    // }
 
     if (N == 256){
         blockSize = 256; gridSize = batch_size * 8;
