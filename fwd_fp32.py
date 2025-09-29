@@ -20,7 +20,7 @@ print("========================================================")
 if not torch.cuda.is_available():
     raise RuntimeError("CUDA is not found")
 
-force_rebuild = True
+force_rebuild = False
 capability = torch.cuda.get_device_capability(torch.cuda.current_device())
 name = torch.cuda.get_device_name(torch.cuda.current_device())
 
@@ -432,7 +432,7 @@ def benchmark(num_neurons=512, seq_len=128, action_dim=32, batch_size=8, activat
     print("--------------- Check correctness ----------------------")
     # def check_tensor_match(tsr_impl, tsr_ref, name, rtol=0.01, atol=0.0001, max_print=10):
     
-    def check_tensor_match(tsr_impl, tsr_ref, name, rtol=1e-5, atol=1e-8, max_print=20):
+    def check_tensor_match(tsr_impl, tsr_ref, name, rtol=1e-5, atol=1e-8, max_print=10):
         if not torch.allclose(tsr_impl, tsr_ref, rtol=rtol, atol=atol):
             print(f"\n{name} differences: a_tol = {atol}, r_tol = {rtol}")
             diff = (tsr_impl - tsr_ref).abs()
@@ -522,9 +522,9 @@ def benchmark(num_neurons=512, seq_len=128, action_dim=32, batch_size=8, activat
 if __name__ == "__main__":
 
     # --- Training Parameters ---
-    num_neurons = 256
+    num_neurons = 128
     seq_len = 1
-    action_dim = 32
+    action_dim = 3
     activation = 'relu'
 
     training_steps = 10

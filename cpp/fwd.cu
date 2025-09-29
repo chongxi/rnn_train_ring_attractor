@@ -1,6 +1,6 @@
 #include "cuda_common.cuh"
 #include "kernels/fwd_hardcode.cu"
-// #include "kernels/fwd_n128_a2.cu"
+#include "kernels/fwd_n128_a23.cu"
 
 #define CHECK_CUDA_ERROR(val) check((val), #val, __FILE__, __LINE__)
 void check(cudaError_t err, char const* func, char const* file, int line)
@@ -31,11 +31,6 @@ void fwd_cuda(
     int batch_size
 );
 
-
-
-
-
-
 void fwd_cuda(
     void* A,
     void* Wa,
@@ -53,54 +48,36 @@ void fwd_cuda(
     int seq_len,
     int batch_size
 ){
+    
     dim3 blockSize, gridSize;
 
-    // blockSize = dim3(BLOCK_SIZE % 32, BLOCK_SIZE / 32); gridSize = dim3(N/TILE_DIM, batch_size);
-    // int num_neuron = N;
+    if (N == 128 && a_dim < 4){
+        // constexpr int BLOCK_SIZE = 512;
+        constexpr int CLUSTER_SIZE = 8;
 
-    // optimized_tbc_kernel<<<gridSize, blockSize>>>(
-    //     static_cast<const float*>(A),
-    //     static_cast<const float*>(Wa),
-    //     // static_cast<const float*>(J0),
-    //     J0,
-    //     J1,
-    //     static_cast<const float*>(Wo),
-    //     static_cast<float*>(r_init),
-    //     static_cast<float *>(W_delta7),
-    //     static_cast<float *>(bump_history),
-    //     static_cast<float *>(r_history),
-    //     num_neuron,
-    //     a_dim,
-    //     batch_size       
-    // );
-    // CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+        blockSize = dim3(32, 16); gridSize = batch_size * CLUSTER_SIZE;
 
-    // if (N == 128 && a_dim == 2){
-    //     constexpr int BLOCK_SIZE = 512;
-    //     constexpr int CLUSTER_SIZE = 8;
+        fwd_n128_a23_kernel<<<gridSize, blockSize>>>(
+            static_cast<const float*>(A),
+            static_cast<const float*>(Wa),
+            // static_cast<const float*>(J0),
+            J0,
+            J1,
+            static_cast<const float*>(Wo),
+            static_cast<float*>(r_init),
+            static_cast<float *>(W_delta7),
+            static_cast<float *>(bump_history),
+            static_cast<float *>(r_history),
+            alpha,
+            N,
+            a_dim,
+            seq_len       
+        );
+    }
 
-    //     blockSize = (BLOCK_SIZE % 32, BLOCK_SIZE / 32); gridSize = batch_size * CLUSTER_SIZE;
-
-    //     fwd_n128_a2_kernel<<<gridSize, blockSize>>>(
-    //         static_cast<const float*>(A),
-    //         static_cast<const float*>(Wa),
-    //         // static_cast<const float*>(J0),
-    //         J0,
-    //         J1,
-    //         static_cast<const float*>(Wo),
-    //         static_cast<float*>(r_init),
-    //         static_cast<float *>(W_delta7),
-    //         static_cast<float *>(bump_history),
-    //         static_cast<float *>(r_history),
-    //         alpha,
-    //         N,
-    //         a_dim,
-    //         seq_len       
-    //     );
-    // }
-
-    if (N == 256){
-        blockSize = 256; gridSize = batch_size * 8;
+    else if (N == 256){
+        constexpr int CLUSTER_SIZE = 8;
+        blockSize = 256; gridSize = batch_size * CLUSTER_SIZE;
 
         persistent_splitK_tbc_kernel<<<gridSize, blockSize>>>(
             static_cast<const float*>(A),
@@ -120,9 +97,6 @@ void fwd_cuda(
         );
         CHECK_CUDA_ERROR(cudaDeviceSynchronize());
     }
-
-    
-
 
 }
 
