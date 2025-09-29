@@ -269,7 +269,7 @@ def process_ring_attractor_sequence_cuda4(action_signal, r, J0, J1, Wo, Wa, W_de
 
 class GeneralizedRingAttractorNoGain(nn.Module):
 
-    def __init__(self, num_neurons, action_dim=2, tau=10.0, dt=1.0, activation='tanh',
+    def __init__(self, num_neurons, action_dim, tau=10.0, dt=1.0, activation='tanh',
                  initialization='random', device='cuda'):
         super().__init__()
         self.num_neurons = num_neurons
@@ -342,7 +342,7 @@ class GeneralizedRingAttractorNoGain(nn.Module):
         
         return r_history, bump_history
 
-def benchmark(num_neurons=512, seq_len=128, action_dim=32, batch_size=8, activation='gelu'):
+def benchmark(num_neurons, seq_len, action_dim, batch_size, activation):
     assert torch.cuda.is_available(), "CUDA GPU not detected. Exiting."
     device = torch.device("cuda")
 
@@ -523,18 +523,22 @@ if __name__ == "__main__":
 
     # --- Training Parameters ---
     num_neurons = 128
-    seq_len = 1
+    seq_len = 20
     action_dim = 3
     activation = 'relu'
 
     training_steps = 10
     learning_rate = 1e-3
-    batch_size = 1
+    batch_size = 32
 
     seq_len_list = [4, 8, 16, 32, 128, 256, 512, 1024, 2048]
     # seq_len_list = [4, 8, 16, 32, 128, 256]
     batch_size_list = [32, 128, 256, 512, 1024, 2048]
     action_dim_list = [2, 4, 8, 32, 128, 256, 512, 1024]
+
+    assert num_neurons == 128 or num_neurons == 256, f"num_neurons must be 128 or 256, got {num_neurons}"
+    assert num_neurons == 128 and action_dim < 4 or num_neurons == 256, f"Invalid configuration: num_neurons={num_neurons}, action_dim={action_dim}"
+    assert seq_len >= 1, f"seq_len must be >= 1, got {seq_len}"
 
     # for seq_len in seq_len_list:
     # for batch_size in batch_size_list:

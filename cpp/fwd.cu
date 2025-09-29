@@ -57,7 +57,7 @@ void fwd_cuda(
 
         blockSize = dim3(32, 16); gridSize = batch_size * CLUSTER_SIZE;
 
-        fwd_n128_a23_kernel<<<gridSize, blockSize>>>(
+        fwd_n128_a23_barrier_kernel<<<gridSize, blockSize>>>(
             static_cast<const float*>(A),
             static_cast<const float*>(Wa),
             // static_cast<const float*>(J0),
@@ -96,6 +96,11 @@ void fwd_cuda(
             seq_len       
         );
         CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+    }
+
+    else {
+        std::cerr << "Error: N=" << N << ", a_dim=" << a_dim << " not supported" << std::endl;
+        return;
     }
 
 }
