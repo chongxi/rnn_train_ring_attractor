@@ -5,64 +5,10 @@ from model_fp32 import GeneralizedRingAttractorNoGain_ref
 import random
 import numpy as np
 
+from rnn_cuda import *
+
 torch.set_printoptions(linewidth=200)
 np.set_printoptions(linewidth=200, precision=6, suppress=True)
-#################################################################################################
-############################################## CUDA #############################################
-#################################################################################################
-
-from torch.utils.cpp_extension import load
-import pathlib
-import os
-
-print("========================================================") 
-
-if not torch.cuda.is_available():
-    raise RuntimeError("CUDA is not found")
-
-force_rebuild = False
-capability = torch.cuda.get_device_capability(torch.cuda.current_device())
-name = torch.cuda.get_device_name(torch.cuda.current_device())
-
-if capability[0] < 9:
-    raise RuntimeError(f"GPU compute capability {capability[0]}.{capability[1]} is below minimum required (9.0)")
-
-os.environ["TORCH_CUDA_ARCH_LIST"] = f"{capability[0]}.{capability[1]}"
-print(f"GPU: {name}, compute capability: {capability[0]}.{capability[1]}")
-
-dir_path = pathlib.Path(__file__).parent.absolute()
-print(f"dir_path: {dir_path}")
-
-
-build_dir = f"{dir_path}/build"
-
-build_path = pathlib.Path(build_dir)
-build_path.mkdir(parents=True, exist_ok=True)
-if force_rebuild:
-    for file in build_path.glob("*"):
-        file.unlink()
-
-# module = load(
-#     name='fwd',
-#     sources=[f"{dir_path}/cpp/fwd.cu", f"{dir_path}/cpp/fwd.cpp"],
-#     verbose=True,
-#     build_directory=build_dir 
-# )
-
-module = load(
-    name='fwd',
-    sources=[f"{dir_path}/cpp/fwd.cu", f"{dir_path}/cpp/fwd.cpp"],
-    verbose=True,
-    build_directory=build_dir,
-    extra_cuda_cflags=[
-        # "-lineinfo",          # useful for profiling
-        "-Xptxas=-v",         # print register/shared memory usage
-        # "--ptxas-options=-v", # alternative syntax
-        "-keep"               # keep intermediate files (including .ptx and .cubin)
-    ]
-)
-
-
 
 def set_seed(seed=42):
     random.seed(seed)
@@ -72,12 +18,9 @@ def set_seed(seed=42):
         torch.cuda.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
 
-# set_seed(42)
-
 #################################################################################################
 #################################################################################################
 #################################################################################################
-
 
 
 def non_linear(x, activation_name):
@@ -182,91 +125,6 @@ def av_to_action_signal_ND(av_signal, action_dim=2):
     
     return action_signal
 
-def process_ring_attractor_sequence_cuda4(action_signal, r, J0, J1, Wo, Wa, W_delta7, activation_name, Wa_weighted, recurrent_input, r_delta7):
-    """Process entire sequence of ring attractor dynamics.
-    
-    Fully allocate bump_history and r_history, remove for loop, persistent kernel where each block will calculate fully for each t-th action 
-
-    N = 256
-    seq_len = 128
-    batch_size = 64
-    a_dim = 32
-
-    Unchanged in for-loop:
-    - action_signal: torch.Size([64, 128, 32])  # input sequence
-    - J0: torch.Size([256, 256])                # baseline connectivity
-    - J1: scalar = 0.1                          # scaling factor
-    - Wo: torch.Size([256, 256])                # recurrent weight
-    - Wa: torch.Size([32, 256, 256])            # action-modulated weight bank
-    - W_delta7: torch.Size([256, 256])          # output projection
-    - activation_name: str                      # nonlinearity to use
-
-    Changed in for-loop:
-    - r: torch.Size([64, 256])                  # neural state (updated each step)
-    - Wa_weighted: torch.Size([64, 256, 256])   # effective weighted action matrix
-    - recurrent_input: torch.Size([64, 256])    # input from recurrent dynamics
-    - r_delta7: torch.Size([64, 256])           # normalized output
-
-    Intermediate:
-    - W_eff: torch.Size([64, 128, 256, 256])
-
-    Final output: 
-    - r_history: torch.Size([64, 128, 256])
-    - bump_history: torch.Size([64, 128, 256])
-
-    /////////////////// Batch size = 1
-
-    Unchanged in for-loop:
-    - action_signal: torch.Size([1, 128, 32])  # input sequence
-    - J0: torch.Size([256, 256])                # baseline connectivity
-    - J1: scalar = 0.1                          # scaling factor
-    - Wo: torch.Size([256, 256])                # recurrent weight
-    - Wa: torch.Size([32, 256, 256])            # action-modulated weight bank
-    - W_delta7: torch.Size([256, 256])          # output projection
-    - activation_name: str                      # nonlinearity to use
-
-    Changed in for-loop:
-    - r: torch.Size([1, 256])                  # neural state (updated each step)
-    - Wa_weighted: torch.Size([1, 256, 256])   # effective weighted action matrix
-    - recurrent_input: torch.Size([1, 256])    # input from recurrent dynamics
-    - r_delta7: torch.Size([1, 256])           # normalized output
-
-    Final output: 
-    - r_history: torch.Size([1, 128, 256])
-    - bump_history: torch.Size([1, 128, 256])
-    """
-
-    batch_size, seq_len, action_dim = action_signal.shape
-    bump_history = []
-    r_history = []
-    A = action_signal  # (batch, seq, action_dim)
-    N, _ = J0.shape
-    
-    # Pre-allocate W_eff tensor
-
-    r_history = torch.zeros(torch.Size([batch_size, seq_len, N]), device='cuda', dtype=torch.float32)
-    bump_history = torch.zeros(torch.Size([batch_size, seq_len, N]), device='cuda', dtype=torch.float32)
-
-    # r_history = torch.zeros(torch.Size([1, 128, 256]), device='cuda', dtype=torch.float32)
-    # bump_history = torch.zeros(torch.Size([1, 128, 256]), device='cuda', dtype=torch.float32)
-
-    # A_expanded = action_signal.unsqueeze(-1).unsqueeze(-1)  # (batch, seq, action_dim, 1, 1)
-    # Wa_all = torch.sum(A_expanded * Wa.unsqueeze(0).unsqueeze(0), dim=2)  # (batch, seq, N, N)
-
-    module.fwd(
-        A=A, 
-        Wa=Wa,
-        J0=J0,
-        J1=J1,
-        Wo=Wo,        
-        r=r,
-        W_delta7=W_delta7,  
-        bump_history=bump_history,
-        r_history=r_history,
-    )
-
-    return r_history, bump_history
-
 class GeneralizedRingAttractorNoGain(nn.Module):
 
     def __init__(self, num_neurons, action_dim, tau=10.0, dt=1.0, activation='tanh',
@@ -286,6 +144,7 @@ class GeneralizedRingAttractorNoGain(nn.Module):
         j = indices.unsqueeze(0)
         angle_diff = 2 * torch.pi * (i - j) / self.num_neurons
         self.register_buffer('W_delta7', torch.cos(angle_diff))
+        self.W_delta7 = self.W_delta7.to(self.device)
 
         # Fixed parameters with float32
         # self.J0 = -0.1 * torch.ones(self.num_neurons, self.num_neurons, device=self.device, dtype=torch.float32)
@@ -300,17 +159,69 @@ class GeneralizedRingAttractorNoGain(nn.Module):
             torch.randn(self.action_dim, self.num_neurons, self.num_neurons, 
                        dtype=torch.float32) / self.num_neurons ** 0.5)
 
+        # Pre-allocate intermediate tensors
+        self.r_history = torch.zeros(torch.Size([batch_size, seq_len, self.num_neurons]), device='cuda', dtype=torch.float32)
+        self.bump_history = torch.zeros(torch.Size([batch_size, seq_len, self.num_neurons]), device='cuda', dtype=torch.float32)        
 
 
     def forward(self, action_signal, r_init=None, ref=True):
-        """
-        Pre-allocates memory for tensors to reduce GPU memory fragmentation.
+        """Process entire sequence of ring attractor dynamics.
+        
+        Fully allocate bump_history and r_history, remove for loop, persistent kernel where each block will calculate fully for each t-th action 
+
+        N = 256
+        seq_len = 128
+        batch_size = 64
+        a_dim = 32
+
+        Unchanged in for-loop:
+        - action_signal: torch.Size([64, 128, 32])  # input sequence
+        - J0: torch.Size([256, 256])                # baseline connectivity
+        - J1: scalar = 0.1                          # scaling factor
+        - Wo: torch.Size([256, 256])                # recurrent weight
+        - Wa: torch.Size([32, 256, 256])            # action-modulated weight bank
+        - W_delta7: torch.Size([256, 256])          # output projection
+        - activation_name: str                      # nonlinearity to use
+
+        Changed in for-loop:
+        - r: torch.Size([64, 256])                  # neural state (updated each step)
+        - Wa_weighted: torch.Size([64, 256, 256])   # effective weighted action matrix
+        - recurrent_input: torch.Size([64, 256])    # input from recurrent dynamics
+        - r_delta7: torch.Size([64, 256])           # normalized output
+
+        Intermediate:
+        - W_eff: torch.Size([64, 128, 256, 256])
+
+        Final output: 
+        - r_history: torch.Size([64, 128, 256])
+        - bump_history: torch.Size([64, 128, 256])
+
+        /////////////////// Batch size = 1
+
+        Unchanged in for-loop:
+        - action_signal: torch.Size([1, 128, 32])  # input sequence
+        - J0: torch.Size([256, 256])                # baseline connectivity
+        - J1: scalar = 0.1                          # scaling factor
+        - Wo: torch.Size([256, 256])                # recurrent weight
+        - Wa: torch.Size([32, 256, 256])            # action-modulated weight bank
+        - W_delta7: torch.Size([256, 256])          # output projection
+        - activation_name: str                      # nonlinearity to use
+
+        Changed in for-loop:
+        - r: torch.Size([1, 256])                  # neural state (updated each step)
+        - Wa_weighted: torch.Size([1, 256, 256])   # effective weighted action matrix
+        - recurrent_input: torch.Size([1, 256])    # input from recurrent dynamics
+        - r_delta7: torch.Size([1, 256])           # normalized output
+
+        Final output: 
+        - r_history: torch.Size([1, 128, 256])
+        - bump_history: torch.Size([1, 128, 256])
         """
         batch_size, seq_len, action_dim = action_signal.shape
         assert action_dim == self.action_dim, f"Expected action_dim {self.action_dim}, got {action_dim}"
 
         # self.J0 = self.J0.to(self.Wo.device)
-        self.W_delta7 = self.W_delta7.to(self.Wo.device)
+        
 
         N = self.num_neurons
 
@@ -321,13 +232,10 @@ class GeneralizedRingAttractorNoGain(nn.Module):
         else:
             r = r_init
 
-        # Pre-allocate intermediate tensors
-        r_history = torch.zeros(torch.Size([batch_size, seq_len, N]), device='cuda', dtype=torch.float32)
-        bump_history = torch.zeros(torch.Size([batch_size, seq_len, N]), device='cuda', dtype=torch.float32)        
 
         alpha = 0.15
 
-        module.fwd(
+        rnn_cuda.fwd(
             A=action_signal, 
             Wa=self.Wa,
             J0=self.J0,
@@ -335,12 +243,12 @@ class GeneralizedRingAttractorNoGain(nn.Module):
             Wo=self.Wo,        
             r_init=r,
             W_delta7=self.W_delta7,  
-            bump_history=bump_history,
-            r_history=r_history,
+            bump_history=self.bump_history,
+            r_history=self.r_history,
             alpha=alpha
         )       
         
-        return r_history, bump_history
+        return self.r_history, self.bump_history
 
 def benchmark(num_neurons, seq_len, action_dim, batch_size, activation):
     assert torch.cuda.is_available(), "CUDA GPU not detected. Exiting."
