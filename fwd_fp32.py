@@ -127,11 +127,13 @@ def av_to_action_signal_ND(av_signal, action_dim=2):
 
 class GeneralizedRingAttractorNoGain(nn.Module):
 
-    def __init__(self, num_neurons, action_dim, tau=10.0, dt=1.0, activation='tanh',
+    def __init__(self, num_neurons, action_dim, batch_size, seq_len, 
+                 tau=10.0, dt=1.0, activation='relu',
                  initialization='random', device='cuda'):
         super().__init__()
         self.num_neurons = num_neurons
         self.action_dim = action_dim
+        self.batch_size = batch_size
         self.tau = tau
         self.dt = dt
         self.activation_name = activation
@@ -139,10 +141,10 @@ class GeneralizedRingAttractorNoGain(nn.Module):
         self.device = device
         
         # Convert indices to float32
-        indices = torch.arange(self.num_neurons, dtype=torch.float32)
+        indices = torch.arange(num_neurons, dtype=torch.float32)
         i = indices.unsqueeze(1)
         j = indices.unsqueeze(0)
-        angle_diff = 2 * torch.pi * (i - j) / self.num_neurons
+        angle_diff = 2 * torch.pi * (i - j) / num_neurons
         self.register_buffer('W_delta7', torch.cos(angle_diff))
         self.W_delta7 = self.W_delta7.to(self.device)
 
@@ -154,14 +156,19 @@ class GeneralizedRingAttractorNoGain(nn.Module):
 
         # Learnable parameters with float32
         self.Wo = nn.Parameter(
-            torch.randn(self.num_neurons, self.num_neurons, dtype=torch.float32) / self.num_neurons ** 0.5)
+            torch.randn(num_neurons, num_neurons, dtype=torch.float32) / num_neurons ** 0.5)
         self.Wa = nn.Parameter(
-            torch.randn(self.action_dim, self.num_neurons, self.num_neurons, 
-                       dtype=torch.float32) / self.num_neurons ** 0.5)
+            torch.randn(action_dim, num_neurons, num_neurons, 
+                       dtype=torch.float32) / num_neurons ** 0.5)
 
         # Pre-allocate intermediate tensors
-        self.r_history = torch.zeros(torch.Size([batch_size, seq_len, self.num_neurons]), device='cuda', dtype=torch.float32)
-        self.bump_history = torch.zeros(torch.Size([batch_size, seq_len, self.num_neurons]), device='cuda', dtype=torch.float32)        
+        self.r_history = torch.empty(batch_size, seq_len, num_neurons, device='cuda', dtype=torch.float32)
+        self.r_history.fill_(0)
+
+        self.bump_history = torch.empty(batch_size, seq_len, num_neurons, device='cuda', dtype=torch.float32)
+        self.bump_history.fill_(0)     
+        
+        torch.cuda.synchronize()   
 
 
     def forward(self, action_signal, r_init=None, ref=True):
@@ -217,18 +224,11 @@ class GeneralizedRingAttractorNoGain(nn.Module):
         - r_history: torch.Size([1, 128, 256])
         - bump_history: torch.Size([1, 128, 256])
         """
-        batch_size, seq_len, action_dim = action_signal.shape
-        assert action_dim == self.action_dim, f"Expected action_dim {self.action_dim}, got {action_dim}"
-
-        # self.J0 = self.J0.to(self.Wo.device)
-        
-
-        N = self.num_neurons
 
         # Initialize r
         if r_init is None:
-            initial_angle = torch.full((batch_size,), torch.pi, device=self.Wo.device)
-            r = create_initial_bump(initial_angle, N, device=self.Wo.device)
+            initial_angle = torch.full((self.batch_size,), torch.pi, device=self.Wo.device)
+            r = create_initial_bump(initial_angle, self.num_neurons, device=self.Wo.device)
         else:
             r = r_init
 
@@ -248,8 +248,8 @@ class GeneralizedRingAttractorNoGain(nn.Module):
             alpha=alpha
         )       
         
-        return self.r_history, self.bump_history
-
+        return self.r_history.clone(), self.bump_history.clone()
+    
 def benchmark(num_neurons, seq_len, action_dim, batch_size, activation):
     assert torch.cuda.is_available(), "CUDA GPU not detected. Exiting."
     device = torch.device("cuda")
@@ -270,6 +270,8 @@ def benchmark(num_neurons, seq_len, action_dim, batch_size, activation):
     
 
     ring_rnn = GeneralizedRingAttractorNoGain(
+        batch_size=batch_size,
+        seq_len=seq_len,
         num_neurons=num_neurons,
         action_dim=action_dim,
         tau=10,
@@ -418,13 +420,11 @@ def benchmark(num_neurons, seq_len, action_dim, batch_size, activation):
     
     print("---------------------------------------------------------------------")
 
-    # with torch.no_grad():
+    lat_ring_rnn = measure_latency_cuda(ring_rnn, av_signal_fp32, r_init=r_init_impl)
+    lat_ring_rnn_ref = measure_latency_cuda(ring_rnn_ref, av_signal_fp32, r_init=r_init_ref)
 
-    #     lat_ring_rnn = measure_latency_cuda(ring_rnn, av_signal_fp32, r_init=r_init_impl)
-    #     lat_ring_rnn_ref = measure_latency_cuda(ring_rnn_ref, av_signal_fp32, r_init=r_init_ref)
-
-    #     print("ring_rnn latency:", lat_ring_rnn)
-    #     print("ring_rnn_ref latency:", lat_ring_rnn_ref)
+    print("ring_rnn latency:", lat_ring_rnn)
+    print("ring_rnn_ref latency:", lat_ring_rnn_ref)
 
 
 if __name__ == "__main__":

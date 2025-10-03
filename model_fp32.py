@@ -159,7 +159,7 @@ class GeneralizedRingAttractorNoGain_ref(nn.Module):
             torch.randn(self.action_dim, self.num_neurons, self.num_neurons, 
                        dtype=torch.float32) / self.num_neurons ** 0.5)
 
-
+    @torch.compile
     def forward(self, action_signal, r_init=None):
         """
         Args:
