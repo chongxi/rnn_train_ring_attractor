@@ -250,7 +250,7 @@ class GeneralizedRingAttractorNoGain(nn.Module):
         
         return self.r_history.clone(), self.bump_history.clone()
     
-def benchmark(num_neurons, seq_len, action_dim, batch_size, activation):
+def benchmark(num_neurons, seq_len, action_dim, batch_size, activation, check):
     assert torch.cuda.is_available(), "CUDA GPU not detected. Exiting."
     device = torch.device("cuda")
 
@@ -380,20 +380,22 @@ def benchmark(num_neurons, seq_len, action_dim, batch_size, activation):
     # Check both tensors
     # check_tensor_match(tsr_impl=predicted_cosine_wave, tsr_ref=predicted_cosine_wave_ref, name="Cosine waves", max_print=20)
     
-    check_tensor_match(tsr_impl=bump_activity, tsr_ref=bump_activity_ref, name="bump_history")
+    if check:
 
-    check_tensor_match(predicted_cosine_wave, predicted_cosine_wave_ref, "r_history", rtol=1e-4, atol=1e-6)
-    # check_tensor_match(predicted_cosine_wave, predicted_cosine_wave_ref, "r_history")
+        check_tensor_match(tsr_impl=bump_activity, tsr_ref=bump_activity_ref, name="bump_history")
 
-    # print("---------------------------------------------------------------------")
+        check_tensor_match(predicted_cosine_wave, predicted_cosine_wave_ref, "r_history", rtol=1e-4, atol=1e-6)
+        # check_tensor_match(predicted_cosine_wave, predicted_cosine_wave_ref, "r_history")
 
-    print("bump_history: ")
-    print("ref : ", bump_activity_ref[0, 0, :10].cpu().numpy())
-    print("impl: ", bump_activity[0, 0, :10].cpu().numpy())
+        # print("---------------------------------------------------------------------")
 
-    print("r_history: ")
-    print("ref : ", predicted_cosine_wave_ref[0, 0, :10].cpu().numpy())
-    print("impl: ", predicted_cosine_wave[0, 0, :10].cpu().numpy())
+        print("bump_history: ")
+        print("ref : ", bump_activity_ref[0, 0, :10].cpu().numpy())
+        print("impl: ", bump_activity[0, 0, :10].cpu().numpy())
+
+        print("r_history: ")
+        print("ref : ", predicted_cosine_wave_ref[0, 0, :10].cpu().numpy())
+        print("impl: ", predicted_cosine_wave[0, 0, :10].cpu().numpy())
 
     def measure_latency_cuda(fn, *args, n_warmup=2, n_iters=20, **kwargs):
         start_event = torch.cuda.Event(enable_timing=True)
@@ -430,7 +432,7 @@ def benchmark(num_neurons, seq_len, action_dim, batch_size, activation):
 if __name__ == "__main__":
 
     # --- Training Parameters ---
-    num_neurons = 128
+    num_neurons = 384
     seq_len = 20
     action_dim = 3
     activation = 'relu'
@@ -442,19 +444,24 @@ if __name__ == "__main__":
     seq_len_list = [4, 8, 16, 32, 128, 256, 512, 1024, 2048]
     # seq_len_list = [4, 8, 16, 32, 128, 256]
     batch_size_list = [32, 128, 256, 512, 1024, 2048]
-    action_dim_list = [2, 4, 8, 32, 128, 256, 512, 1024]
+    action_dim_list = [2, 3, 4, 8, 32, 128, 256, 512, 1024]
+    num_neurons_list = [128, 128*2, 128*3, 128*4, 128*5, 128*6, 128*7, 128*8]
 
-    assert num_neurons == 128 or num_neurons == 256, f"num_neurons must be 128 or 256, got {num_neurons}"
-    assert num_neurons == 128 and action_dim < 4 or num_neurons == 256, f"Invalid configuration: num_neurons={num_neurons}, action_dim={action_dim}"
-    assert seq_len >= 1, f"seq_len must be >= 1, got {seq_len}"
+    # assert num_neurons == 128 or num_neurons == 256, f"num_neurons must be 128 or 256, got {num_neurons}"
+    # assert num_neurons == 128 and action_dim < 4 or num_neurons == 256, f"Invalid configuration: num_neurons={num_neurons}, action_dim={action_dim}"
+    # assert seq_len >= 1, f"seq_len must be >= 1, got {seq_len}"
 
-    # for seq_len in seq_len_list:
+    check_correctness = False
+
+    for num_neurons in num_neurons_list:
     # for batch_size in batch_size_list:
     # for action_dim in action_dim_list:
-    #     print(f"batch_size: {batch_size} num_neurons: {num_neurons}, action dim: {action_dim}, seq_len {seq_len}: ")
-    #     benchmark(num_neurons=num_neurons, seq_len=seq_len, action_dim=action_dim, batch_size=batch_size, activation=activation) 
+        print(f"batch_size: {batch_size} num_neurons: {num_neurons}, action dim: {action_dim}, seq_len {seq_len}: ")
+        benchmark(num_neurons=num_neurons, seq_len=seq_len, action_dim=action_dim, batch_size=batch_size, activation=activation, check=check_correctness) 
 
-    print(f"batch_size: {batch_size} num_neurons: {num_neurons}, action dim: {action_dim}, seq_len {seq_len}: ")
-    benchmark(num_neurons=num_neurons, seq_len=seq_len, action_dim=action_dim, batch_size=batch_size, activation=activation) 
+
+    # check_correctness = True
+    # print(f"batch_size: {batch_size} num_neurons: {num_neurons}, action dim: {action_dim}, seq_len {seq_len}: ")
+    # benchmark(num_neurons=num_neurons, seq_len=seq_len, action_dim=action_dim, batch_size=batch_size, activation=activation, check=check_correctness) 
 
 

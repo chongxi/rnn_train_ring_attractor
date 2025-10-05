@@ -1,6 +1,6 @@
 #include "cuda_common.cuh"
 #include "kernels/fwd_hardcode.cuh"
-#include "kernels/fwd_n128_a23.cuh"
+#include "kernels/fwd_n128_a23_simple.cuh"
 
 #define CHECK_CUDA_ERROR(val) check((val), #val, __FILE__, __LINE__)
 void check(cudaError_t err, char const* func, char const* file, int line)
@@ -49,7 +49,7 @@ void fwd_cuda(
     int batch_size
 ){
 
-    if (N == 128 && a_dim < 4){
+
         fwd_n128_a23_kernel_launcher(
             A,
             Wa,
@@ -68,35 +68,77 @@ void fwd_cuda(
         );
 
         CHECK_CUDA_ERROR(cudaGetLastError());
-    }
 
-    else if (N == 256){
-        hardcode_kernel_launcher(
-            A,
-            Wa,
-            J0,
-            J1,
-            Wo,
-            r_init,
-            W_delta7,
-            bump_history,
-            r_history,
-            alpha,
-            N,
-            a_dim,
-            seq_len,
-            batch_size
-        );
-
-        CHECK_CUDA_ERROR(cudaGetLastError());
-    }
-
-    else {
-        std::cerr << "Error: N=" << N << ", a_dim=" << a_dim << " not supported" << std::endl;
-        return;
-    }
 
 }
+
+
+// void fwd_cuda(
+//     void* A,
+//     void* Wa,
+//     // void* J0,
+//     float J0,
+//     float J1,
+//     void* Wo,
+//     void* r_init,
+//     void* W_delta7,
+//     void* bump_history,
+//     void* r_history,
+//     float alpha,
+//     int N,
+//     int a_dim,
+//     int seq_len,
+//     int batch_size
+// ){
+
+//     if (N == 128 && a_dim < 4){
+//         fwd_n128_a23_kernel_launcher(
+//             A,
+//             Wa,
+//             J0,
+//             J1,
+//             Wo,
+//             r_init,
+//             W_delta7,
+//             bump_history,
+//             r_history,
+//             alpha,
+//             N,
+//             a_dim,
+//             seq_len,
+//             batch_size
+//         );
+
+//         CHECK_CUDA_ERROR(cudaGetLastError());
+//     }
+
+//     else if (N == 256){
+//         hardcode_kernel_launcher(
+//             A,
+//             Wa,
+//             J0,
+//             J1,
+//             Wo,
+//             r_init,
+//             W_delta7,
+//             bump_history,
+//             r_history,
+//             alpha,
+//             N,
+//             a_dim,
+//             seq_len,
+//             batch_size
+//         );
+
+//         CHECK_CUDA_ERROR(cudaGetLastError());
+//     }
+
+//     else {
+//         std::cerr << "Error: N=" << N << ", a_dim=" << a_dim << " not supported" << std::endl;
+//         return;
+//     }
+
+// }
 
 
 // __device__ float smem_reduce(float val_per_thread) {
