@@ -432,7 +432,7 @@ def benchmark(num_neurons, seq_len, action_dim, batch_size, activation, check):
 if __name__ == "__main__":
 
     # --- Training Parameters ---
-    num_neurons = 128
+    num_neurons = 256
     seq_len = 20
     action_dim = 3
     activation = 'relu'
