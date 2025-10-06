@@ -442,7 +442,9 @@ if __name__ == "__main__":
     batch_size = 256
     training_steps = 10
     learning_rate = 1e-3
-    
+
+    assert num_neurons % 128 == 0, f"num_neurons must be divisible by 128, got {num_neurons}"
+
     print("BASE PARAMETERS: ")
     check_correctness = True
     print(f"batch_size: {batch_size} num_neurons: {num_neurons}, action dim: {action_dim}, seq_len {seq_len}: ")
@@ -454,45 +456,45 @@ if __name__ == "__main__":
     action_dim_list = [2, 3, 4, 8, 32, 128, 256, 512, 1024]
     num_neurons_list = [128, 128*2, 128*3, 128*4, 128*5, 128*6, 128*7, 128*8]
 
-    # assert num_neurons == 128 or num_neurons == 256, f"num_neurons must be 128 or 256, got {num_neurons}"
+    # 
     # assert num_neurons == 128 and action_dim < 4 or num_neurons == 256, f"Invalid configuration: num_neurons={num_neurons}, action_dim={action_dim}"
     # assert seq_len >= 1, f"seq_len must be >= 1, got {seq_len}"
 
-    check_correctness = True
+    # check_correctness = True
 
-    for num_neurons in num_neurons_list:
-        print(f"batch_size: {batch_size} num_neurons: {num_neurons}, action dim: {action_dim}, seq_len {seq_len}: ")
-        benchmark(num_neurons=num_neurons, seq_len=seq_len, action_dim=action_dim, batch_size=batch_size, activation=activation, check=check_correctness) 
+    # for num_neurons in num_neurons_list:
+    #     print(f"batch_size: {batch_size} num_neurons: {num_neurons}, action dim: {action_dim}, seq_len {seq_len}: ")
+    #     benchmark(num_neurons=num_neurons, seq_len=seq_len, action_dim=action_dim, batch_size=batch_size, activation=activation, check=check_correctness) 
     
-    num_neurons = 256
-    seq_len = 20
-    action_dim = 3
-    activation = 'relu'
-    batch_size = 256
+    # num_neurons = 256
+    # seq_len = 20
+    # action_dim = 3
+    # activation = 'relu'
+    # batch_size = 256
 
-    for seq_len in seq_len_list:
-        print(f"batch_size: {batch_size} num_neurons: {num_neurons}, action dim: {action_dim}, seq_len {seq_len}: ")
-        benchmark(num_neurons=num_neurons, seq_len=seq_len, action_dim=action_dim, batch_size=batch_size, activation=activation, check=check_correctness) 
+    # for seq_len in seq_len_list:
+    #     print(f"batch_size: {batch_size} num_neurons: {num_neurons}, action dim: {action_dim}, seq_len {seq_len}: ")
+    #     benchmark(num_neurons=num_neurons, seq_len=seq_len, action_dim=action_dim, batch_size=batch_size, activation=activation, check=check_correctness) 
 
-    num_neurons = 256
-    seq_len = 20
-    action_dim = 3
-    activation = 'relu'
-    batch_size = 256
+    # num_neurons = 256
+    # seq_len = 20
+    # action_dim = 3
+    # activation = 'relu'
+    # batch_size = 256
 
-    for batch_size in batch_size_list:
-        print(f"batch_size: {batch_size} num_neurons: {num_neurons}, action dim: {action_dim}, seq_len {seq_len}: ")
-        benchmark(num_neurons=num_neurons, seq_len=seq_len, action_dim=action_dim, batch_size=batch_size, activation=activation, check=check_correctness)
+    # for batch_size in batch_size_list:
+    #     print(f"batch_size: {batch_size} num_neurons: {num_neurons}, action dim: {action_dim}, seq_len {seq_len}: ")
+    #     benchmark(num_neurons=num_neurons, seq_len=seq_len, action_dim=action_dim, batch_size=batch_size, activation=activation, check=check_correctness)
 
-    num_neurons = 256
-    seq_len = 20
-    action_dim = 3
-    activation = 'relu'
-    batch_size = 256
+    # num_neurons = 256
+    # seq_len = 20
+    # action_dim = 3
+    # activation = 'relu'
+    # batch_size = 256
 
-    for action_dim in action_dim_list:
-        print(f"batch_size: {batch_size} num_neurons: {num_neurons}, action dim: {action_dim}, seq_len {seq_len}: ")
-        benchmark(num_neurons=num_neurons, seq_len=seq_len, action_dim=action_dim, batch_size=batch_size, activation=activation, check=check_correctness)                
+    # for action_dim in action_dim_list:
+    #     print(f"batch_size: {batch_size} num_neurons: {num_neurons}, action dim: {action_dim}, seq_len {seq_len}: ")
+    #     benchmark(num_neurons=num_neurons, seq_len=seq_len, action_dim=action_dim, batch_size=batch_size, activation=activation, check=check_correctness)                
 
 
     # check_correctness = False
