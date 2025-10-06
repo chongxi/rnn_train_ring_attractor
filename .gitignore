@@ -1,5 +1,5 @@
 cpp/build
-cpp/main
+cpp/profile
 **/__pycache__/
 build
 .vscode/

@@ -1,8 +1,8 @@
 #include "cuda_common.cuh"
-// #include "kernels/fwd_hardcode.cuh"
+// #include "kernels/fwd_n128_a23.cuh"
 // #include "kernels/fwd_128_simple.cuh"
-#include "kernels/fwd_3kernels_simple.cuh"
-// #include "kernels/fwd_1kernels_simple.cuh"
+#include "kernels/fwd_3kernels_simple_act.cuh"
+
 
 #define CHECK_CUDA_ERROR(val) check((val), #val, __FILE__, __LINE__)
 void check(cudaError_t err, char const* func, char const* file, int line)
@@ -18,7 +18,6 @@ void check(cudaError_t err, char const* func, char const* file, int line)
 void fwd_cuda(
     void* A,
     void* Wa,
-    // void* J0,
     float J0,
     float J1,
     void* Wo,
@@ -30,13 +29,13 @@ void fwd_cuda(
     int N,
     int a_dim,
     int seq_len,
-    int batch_size
+    int batch_size,
+    int activation_type
 );
 
 void fwd_cuda(
     void* A,
     void* Wa,
-    // void* J0,
     float J0,
     float J1,
     void* Wo,
@@ -48,30 +47,16 @@ void fwd_cuda(
     int N,
     int a_dim,
     int seq_len,
-    int batch_size
+    int batch_size,
+    int activation_type
 ){
-
-
-        fwd_n128_a23_global_launcher(
-            A,
-            Wa,
-            J0,
-            J1,
-            Wo,
-            r_init,
-            W_delta7,
-            bump_history,
-            r_history,
-            alpha,
-            N,
-            a_dim,
-            seq_len,
-            batch_size
-        );
-
-        CHECK_CUDA_ERROR(cudaGetLastError());
-
-
+    fwd_n128_a23_global_launcher(
+        A, Wa, J0, J1, Wo, r_init, W_delta7,
+        bump_history, r_history, alpha,
+        N, a_dim, seq_len, batch_size, activation_type
+    );
+    
+    CHECK_CUDA_ERROR(cudaGetLastError());
 }
 
 
