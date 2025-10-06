@@ -1,4 +1,5 @@
 cpp/build
+cpp/main
 **/__pycache__/
 build
 .vscode/

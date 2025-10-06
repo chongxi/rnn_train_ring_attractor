@@ -439,7 +439,7 @@ if __name__ == "__main__":
 
     training_steps = 10
     learning_rate = 1e-3
-    batch_size = 32
+    batch_size = 512
 
     seq_len_list = [4, 8, 16, 32, 128, 256, 512, 1024, 2048]
     # seq_len_list = [4, 8, 16, 32, 128, 256]

@@ -2,6 +2,7 @@
 // #include "kernels/fwd_hardcode.cuh"
 // #include "kernels/fwd_128_simple.cuh"
 #include "kernels/fwd_3kernels_simple.cuh"
+// #include "kernels/fwd_1kernels_simple.cuh"
 
 #define CHECK_CUDA_ERROR(val) check((val), #val, __FILE__, __LINE__)
 void check(cudaError_t err, char const* func, char const* file, int line)

@@ -56,22 +56,23 @@ __global__ void fwd_compute_r7_kernel(
     auto tile = cg::tiled_partition<128>(cta);
     
     int batch_idx = blockIdx.x;
-    int neuron_idx = blockIdx.y;  // Each block handles one neuron
+    int block_id_y = blockIdx.y;  // 0 to 7
     
-    float r7_local = 0.f;
-    
-    // Stripe across n_neur with tile, each thread accumulates partial sum
-    for (int k = tile.thread_rank(); k < n_neur; k += 128){
-        r7_local += r_init[batch_idx * n_neur + k] 
-                  * W_delta7[neuron_idx * n_neur + k];
-    }
-    
-    // Reduce across tile to get final r7 value
-    float r7 = cg::reduce(tile, r7_local, cg::plus<float>());
-    
-    // Only thread 0 writes the result
-    if (tile.thread_rank() == 0){
-        r_history[batch_idx * seq_len * n_neur + t * n_neur + neuron_idx] = r7;
+    // Stride across neurons with grid stride
+    for (int neuron_idx = block_id_y; neuron_idx < n_neur; neuron_idx += 8){
+        float r7_local = 0.f;
+        
+        // Stripe across n_neur with tile, each thread accumulates partial sum
+        for (int k = tile.thread_rank(); k < n_neur; k += 128){
+            r7_local += r_init[batch_idx * n_neur + k] 
+                      * W_delta7[neuron_idx * n_neur + k];
+        }
+        
+        float r7 = cg::reduce(tile, r7_local, cg::plus<float>());
+        
+        if (tile.thread_rank() == 0){
+            r_history[batch_idx * seq_len * n_neur + t * n_neur + neuron_idx] = r7;
+        }
     }
 }
 
@@ -137,9 +138,8 @@ void fwd_n128_a23_global_launcher(
     dim3 blockSize1(128);
     dim3 gridSize1(batch_size, num_blocks_y);
     
-    // Changed: one block per neuron, not per 128 neurons
     dim3 blockSize2(128);
-    dim3 gridSize2(batch_size, N);  // N blocks in y dimension
+    dim3 gridSize2(batch_size, 8);
     
     dim3 blockSize3(128);
     dim3 gridSize3(batch_size);
