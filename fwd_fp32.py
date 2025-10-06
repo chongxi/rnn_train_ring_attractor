@@ -421,13 +421,13 @@ def benchmark(num_neurons, seq_len, action_dim, batch_size, activation, check):
         std = times.std(unbiased=False).item()
         return f"{mean:.3f} ± {std:.3f} ms"
     
-    print("---------------------------------------------------------------------")
+    # print("---------------------------------------------------------------------")
 
-    lat_ring_rnn = measure_latency_cuda(ring_rnn, av_signal_fp32, r_init=r_init_impl)
-    lat_ring_rnn_ref = measure_latency_cuda(ring_rnn_ref, av_signal_fp32, r_init=r_init_ref)
+    # lat_ring_rnn = measure_latency_cuda(ring_rnn, av_signal_fp32, r_init=r_init_impl)
+    # lat_ring_rnn_ref = measure_latency_cuda(ring_rnn_ref, av_signal_fp32, r_init=r_init_ref)
 
-    print("ring_rnn latency:", lat_ring_rnn)
-    print("ring_rnn_ref latency:", lat_ring_rnn_ref)
+    # print("ring_rnn latency:", lat_ring_rnn)
+    # print("ring_rnn_ref latency:", lat_ring_rnn_ref)
 
 
 if __name__ == "__main__":
@@ -435,10 +435,10 @@ if __name__ == "__main__":
     # --- Training Parameters ---
     
     # Base parameters
-    num_neurons = 256
+    num_neurons = 128
     seq_len = 20
-    action_dim = 3
-    activation = 'relu'
+    action_dim = 32
+    activation = 'tanh'
     batch_size = 256
     training_steps = 10
     learning_rate = 1e-3

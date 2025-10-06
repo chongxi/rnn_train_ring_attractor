@@ -1,7 +1,8 @@
 #include "cuda_common.cuh"
 // #include "kernels/fwd_n128_a23.cuh"
-// #include "kernels/fwd_128_simple.cuh"
-#include "kernels/fwd_3kernels_simple_act.cuh"
+#include "kernels/fwd_128_simple.cuh"
+// #include "kernels/fwd_3kernels_simple_act.cuh"
+// #include "kernels/fwd_3kernels_simple_act_loops.cuh"
 
 
 #define CHECK_CUDA_ERROR(val) check((val), #val, __FILE__, __LINE__)

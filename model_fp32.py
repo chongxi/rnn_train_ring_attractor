@@ -203,9 +203,24 @@ class GeneralizedRingAttractorNoGain_ref(nn.Module):
 
             # Effective weight matrix
             W_eff = self.J0 + self.J1 * self.Wo + Wa_weighted
-
+            if t == 0:
+                r_cpu = r[0].cpu()  # First batch
+                W_eff_cpu = W_eff[0].cpu()
+                
+                diag_sum = torch.sum(torch.diag(W_eff_cpu) * r_cpu)
+                row_sums = W_eff_cpu @ r_cpu
+                
+                print(f"Diagonal sum: {diag_sum:.6f}")
+                print(f"Row sums (first 5): {row_sums[:5]}")
+                print(f"Are all row sums equal to diagonal sum? {torch.allclose(row_sums, diag_sum.expand_as(row_sums))}")
             # Recurrent dynamics
             recurrent_input = (W_eff @ r.unsqueeze(2)).squeeze(2)
+
+            if t == 0:
+                print(f"recurrent_input shape: {recurrent_input.shape}")
+                print(f"recurrent_input[0] (first batch, first 5 neurons): {recurrent_input[0, :5]}")
+                print(f"recurrent_input[0] all same? {torch.allclose(recurrent_input[0], recurrent_input[0, 0].expand_as(recurrent_input[0]))}")
+
             recurrent_input = non_linear(recurrent_input, self.activation_name)
 
             # Update rule (leaky integration)
