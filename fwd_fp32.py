@@ -342,7 +342,7 @@ def benchmark(num_neurons, seq_len, action_dim, batch_size, activation, check):
     print("--------------- Check correctness ----------------------")
     # def check_tensor_match(tsr_impl, tsr_ref, name, rtol=0.01, atol=0.0001, max_print=10):
     
-    def check_tensor_match(tsr_impl, tsr_ref, name, rtol=1e-5, atol=1e-8, max_print=10):
+    def check_tensor_match(tsr_impl, tsr_ref, name, rtol=1e-5, atol=1e-8, max_print=1):
         if not torch.allclose(tsr_impl, tsr_ref, rtol=rtol, atol=atol):
             print(f"\n{name} differences: a_tol = {atol}, r_tol = {rtol}")
             diff = (tsr_impl - tsr_ref).abs()
@@ -432,7 +432,7 @@ def benchmark(num_neurons, seq_len, action_dim, batch_size, activation, check):
 if __name__ == "__main__":
 
     # --- Training Parameters ---
-    num_neurons = 384
+    num_neurons = 128
     seq_len = 20
     action_dim = 3
     activation = 'relu'
@@ -451,17 +451,17 @@ if __name__ == "__main__":
     # assert num_neurons == 128 and action_dim < 4 or num_neurons == 256, f"Invalid configuration: num_neurons={num_neurons}, action_dim={action_dim}"
     # assert seq_len >= 1, f"seq_len must be >= 1, got {seq_len}"
 
-    check_correctness = False
-
-    for num_neurons in num_neurons_list:
-    # for batch_size in batch_size_list:
-    # for action_dim in action_dim_list:
-        print(f"batch_size: {batch_size} num_neurons: {num_neurons}, action dim: {action_dim}, seq_len {seq_len}: ")
-        benchmark(num_neurons=num_neurons, seq_len=seq_len, action_dim=action_dim, batch_size=batch_size, activation=activation, check=check_correctness) 
-
-
     # check_correctness = True
-    # print(f"batch_size: {batch_size} num_neurons: {num_neurons}, action dim: {action_dim}, seq_len {seq_len}: ")
-    # benchmark(num_neurons=num_neurons, seq_len=seq_len, action_dim=action_dim, batch_size=batch_size, activation=activation, check=check_correctness) 
+
+    # for num_neurons in num_neurons_list:
+    # # for batch_size in batch_size_list:
+    # # for action_dim in action_dim_list:
+    #     print(f"batch_size: {batch_size} num_neurons: {num_neurons}, action dim: {action_dim}, seq_len {seq_len}: ")
+    #     benchmark(num_neurons=num_neurons, seq_len=seq_len, action_dim=action_dim, batch_size=batch_size, activation=activation, check=check_correctness) 
+
+
+    check_correctness = True
+    print(f"batch_size: {batch_size} num_neurons: {num_neurons}, action dim: {action_dim}, seq_len {seq_len}: ")
+    benchmark(num_neurons=num_neurons, seq_len=seq_len, action_dim=action_dim, batch_size=batch_size, activation=activation, check=check_correctness) 
 
 

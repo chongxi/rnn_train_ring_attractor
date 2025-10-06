@@ -1,5 +1,5 @@
 #include "cuda_common.cuh"
-#include "kernels/fwd_hardcode.cuh"
+// #include "kernels/fwd_hardcode.cuh"
 #include "kernels/fwd_n128_a23_simple.cuh"
 
 #define CHECK_CUDA_ERROR(val) check((val), #val, __FILE__, __LINE__)
@@ -50,7 +50,7 @@ void fwd_cuda(
 ){
 
 
-        fwd_n128_a23_kernel_launcher(
+        fwd_n128_a23_global_launcher(
             A,
             Wa,
             J0,
