@@ -251,7 +251,7 @@ class GeneralizedRingAttractorNoGain(nn.Module):
         
         return self.r_history.clone(), self.bump_history.clone()
     
-def benchmark(num_neurons, seq_len, action_dim, batch_size, activation, check):
+def benchmark(num_neurons, seq_len, action_dim, batch_size, activation, check, measure_latency):
     assert torch.cuda.is_available(), "CUDA GPU not detected. Exiting."
     device = torch.device("cuda")
 
@@ -383,7 +383,7 @@ def benchmark(num_neurons, seq_len, action_dim, batch_size, activation, check):
     
     if check:
 
-        check_tensor_match(tsr_impl=bump_activity, tsr_ref=bump_activity_ref, name="bump_history")
+        check_tensor_match(tsr_impl=bump_activity, tsr_ref=bump_activity_ref, name="bump_history", rtol=1e-7, atol=1e-5)
 
         check_tensor_match(predicted_cosine_wave, predicted_cosine_wave_ref, "r_history", rtol=1e-4, atol=1e-6)
         # check_tensor_match(predicted_cosine_wave, predicted_cosine_wave_ref, "r_history")
@@ -421,13 +421,14 @@ def benchmark(num_neurons, seq_len, action_dim, batch_size, activation, check):
         std = times.std(unbiased=False).item()
         return f"{mean:.3f} ± {std:.3f} ms"
     
-    # print("---------------------------------------------------------------------")
+    if measure_latency:
+        print("---------------------------------------------------------------------")
 
-    # lat_ring_rnn = measure_latency_cuda(ring_rnn, av_signal_fp32, r_init=r_init_impl)
-    # lat_ring_rnn_ref = measure_latency_cuda(ring_rnn_ref, av_signal_fp32, r_init=r_init_ref)
+        lat_ring_rnn = measure_latency_cuda(ring_rnn, av_signal_fp32, r_init=r_init_impl)
+        lat_ring_rnn_ref = measure_latency_cuda(ring_rnn_ref, av_signal_fp32, r_init=r_init_ref)
 
-    # print("ring_rnn latency:", lat_ring_rnn)
-    # print("ring_rnn_ref latency:", lat_ring_rnn_ref)
+        print("ring_rnn latency:", lat_ring_rnn)
+        print("ring_rnn_ref latency:", lat_ring_rnn_ref)
 
 
 if __name__ == "__main__":
@@ -435,30 +436,31 @@ if __name__ == "__main__":
     # --- Training Parameters ---
     
     # Base parameters
-    num_neurons = 128
+    num_neurons = 300
     seq_len = 20
     action_dim = 32
-    activation = 'tanh'
+    # relu, gelu, tanh
+    activation = 'gelu'
     batch_size = 256
     training_steps = 10
     learning_rate = 1e-3
 
-    assert num_neurons % 128 == 0, f"num_neurons must be divisible by 128, got {num_neurons}"
+    # assert num_neurons % 128 == 0, f"num_neurons must be divisible by 128, got {num_neurons}"
 
     print("BASE PARAMETERS: ")
     check_correctness = True
+    measure_latency = True
+
     print(f"batch_size: {batch_size} num_neurons: {num_neurons}, action dim: {action_dim}, seq_len {seq_len}: ")
-    benchmark(num_neurons=num_neurons, seq_len=seq_len, action_dim=action_dim, batch_size=batch_size, activation=activation, check=check_correctness) 
+    benchmark(num_neurons=num_neurons, seq_len=seq_len, action_dim=action_dim, batch_size=batch_size, activation=activation, check=check_correctness, measure_latency=measure_latency) 
 
-    seq_len_list = [4, 8, 16, 32, 128, 256, 512, 1024, 2048]
-    # seq_len_list = [4, 8, 16, 32, 128, 256]
-    batch_size_list = [32, 128, 256, 512, 1024, 2048]
-    action_dim_list = [2, 3, 4, 8, 32, 128, 256, 512, 1024]
-    num_neurons_list = [128, 128*2, 128*3, 128*4, 128*5, 128*6, 128*7, 128*8]
+    # Uncomment below for comprehensive debugging
 
-    # 
-    # assert num_neurons == 128 and action_dim < 4 or num_neurons == 256, f"Invalid configuration: num_neurons={num_neurons}, action_dim={action_dim}"
-    # assert seq_len >= 1, f"seq_len must be >= 1, got {seq_len}"
+    # seq_len_list = [4, 8, 16, 32, 128, 256, 512, 1024, 2048]
+    # # seq_len_list = [4, 8, 16, 32, 128, 256]
+    # batch_size_list = [32, 128, 256, 512, 1024, 2048]
+    # action_dim_list = [2, 3, 4, 8, 32, 128, 256, 512, 1024]
+    # num_neurons_list = [128, 128*2, 128*3, 128*4, 128*5, 128*6, 128*7, 128*8]
 
     # check_correctness = True
 

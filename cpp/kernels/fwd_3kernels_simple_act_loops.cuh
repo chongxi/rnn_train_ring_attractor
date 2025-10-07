@@ -20,7 +20,8 @@ __global__ void fwd_update_r_kernel(
     float J0,
     float J1,
     const float* Wo,
-    float* r_init,
+    const float* r_in,
+    float* r_out,
     float* bump_history,
     float alpha,
     int n_neur,
@@ -32,30 +33,32 @@ __global__ void fwd_update_r_kernel(
     auto tile = cg::tiled_partition<128>(cta);
     
     int batch_idx = blockIdx.x;
-    int neuron_idx = blockIdx.y * 128 + tile.thread_rank();
+    int neuron_idx = blockIdx.y;
     
     if (neuron_idx >= n_neur) return;
     
     float ri_local = 0.f;
     
-    for (int k = tile.thread_rank(); k < n_neur; k += 128){
+    for (int j = tile.thread_rank(); j < n_neur; j += 128){
         float wa_weighted = 0.f;
         for (int a = 0; a < a_dim; ++a){
             wa_weighted += A[batch_idx * seq_len * a_dim + t * a_dim + a] 
-                         * Wa[a * n_neur * n_neur + neuron_idx * n_neur + k];
+                         * Wa[a * n_neur * n_neur + neuron_idx * n_neur + j];
         }
         
-        float w_eff = J0 + J1 * Wo[neuron_idx * n_neur + k] + wa_weighted;
-        ri_local += w_eff * r_init[batch_idx * n_neur + k];
+        float w_eff = J0 + J1 * Wo[neuron_idx * n_neur + j] + wa_weighted;
+        ri_local += w_eff * r_in[batch_idx * n_neur + j];
     }
     
     float ri = cg::reduce(tile, ri_local, cg::plus<float>());
     
-    float ri_activated = activation<ACT>(ri);
-    float r = (1.f - alpha) * r_init[batch_idx * n_neur + neuron_idx] + alpha * ri_activated;
-    
-    bump_history[batch_idx * seq_len * n_neur + t * n_neur + neuron_idx] = r;
-    r_init[batch_idx * n_neur + neuron_idx] = r;
+    if (tile.thread_rank() == 0){
+        float ri_activated = activation<ACT>(ri);
+        float r = (1.f - alpha) * r_in[batch_idx * n_neur + neuron_idx] + alpha * ri_activated;
+        
+        bump_history[batch_idx * seq_len * n_neur + t * n_neur + neuron_idx] = r;
+        r_out[batch_idx * n_neur + neuron_idx] = r;
+    }
 }
 
 __global__ void fwd_compute_r7_kernel(
@@ -146,10 +149,8 @@ void fwd_n128_a23_global_launcher_impl(
     int seq_len,
     int batch_size
 ){
-    int num_blocks_y = (N + 127) / 128;
-    
     dim3 blockSize1(128);
-    dim3 gridSize1(batch_size, num_blocks_y);
+    dim3 gridSize1(batch_size, N);
     
     dim3 blockSize2(128);
     dim3 gridSize2(batch_size, 8);
@@ -157,22 +158,28 @@ void fwd_n128_a23_global_launcher_impl(
     dim3 blockSize3(128);
     dim3 gridSize3(batch_size);
     
+    int num_blocks_y = (N + 127) / 128;
     size_t smem_size = num_blocks_y * sizeof(float);
+    
+    float* r_temp;
+    cudaMalloc(&r_temp, batch_size * N * sizeof(float));
 
-    // First loop: compute bump_history
     for (int t = 0; t < seq_len; ++t){
         fwd_update_r_kernel<ACT><<<gridSize1, blockSize1>>>(
             static_cast<const float*>(A),
             static_cast<const float*>(Wa),
             J0, J1,
             static_cast<const float*>(Wo),
-            static_cast<float*>(r_init),
+            static_cast<const float*>(r_init),
+            r_temp,
             static_cast<float*>(bump_history),
             alpha, N, a_dim, seq_len, t
         );
+        cudaMemcpy(r_init, r_temp, batch_size * N * sizeof(float), cudaMemcpyDeviceToDevice);
     }
     
-    // Second loop: compute r_history from bump_history
+    cudaFree(r_temp);
+    
     for (int t = 0; t < seq_len; ++t){
         fwd_compute_r7_kernel<<<gridSize2, blockSize2>>>(
             static_cast<const float*>(bump_history),

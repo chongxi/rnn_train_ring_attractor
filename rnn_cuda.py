@@ -54,7 +54,8 @@ rnn_cuda = load(
     name='fwd',
     sources=[f"{dir_path}/cpp/fwd.cu", f"{dir_path}/cpp/fwd.cpp"],
     verbose=True,
-    build_directory=build_dir 
+    build_directory=build_dir,
+    with_cuda=True
 )
 
 # module = load(
