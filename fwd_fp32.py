@@ -436,7 +436,7 @@ if __name__ == "__main__":
     # --- Training Parameters ---
     
     # Base parameters
-    num_neurons = 300
+    num_neurons = 32
     seq_len = 20
     action_dim = 32
     # relu, gelu, tanh
@@ -445,16 +445,16 @@ if __name__ == "__main__":
     training_steps = 10
     learning_rate = 1e-3
 
-    # assert num_neurons % 128 == 0, f"num_neurons must be divisible by 128, got {num_neurons}"
-
     print("BASE PARAMETERS: ")
     check_correctness = True
     measure_latency = True
 
-    print(f"batch_size: {batch_size} num_neurons: {num_neurons}, action dim: {action_dim}, seq_len {seq_len}: ")
+    print(f"batch_size: {batch_size} num_neurons: {num_neurons}, action dim: {action_dim}, seq_len {seq_len}, activation: {activation}:")
     benchmark(num_neurons=num_neurons, seq_len=seq_len, action_dim=action_dim, batch_size=batch_size, activation=activation, check=check_correctness, measure_latency=measure_latency) 
 
-    # Uncomment below for comprehensive debugging
+    # =========================================================
+    # Uncomment below for comprehensive debugging on local GPU
+    # =========================================================
 
     # seq_len_list = [4, 8, 16, 32, 128, 256, 512, 1024, 2048]
     # # seq_len_list = [4, 8, 16, 32, 128, 256]
