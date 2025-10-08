@@ -347,7 +347,7 @@ def benchmark(num_neurons, seq_len, action_dim, batch_size, activation, check, m
     print("--------------- Check correctness ----------------------")
     # def check_tensor_match(tsr_impl, tsr_ref, name, rtol=0.01, atol=0.0001, max_print=10):
     
-    def check_tensor_match(tsr_impl, tsr_ref, name, rtol=1e-5, atol=1e-8, max_print=20):
+    def check_tensor_match(tsr_impl, tsr_ref, name, rtol=1e-5, atol=1e-8, max_print=1):
         if not torch.allclose(tsr_impl, tsr_ref, rtol=rtol, atol=atol):
             print(f"\n{name} differences: a_tol = {atol}, r_tol = {rtol}")
             diff = (tsr_impl - tsr_ref).abs()
@@ -440,12 +440,12 @@ if __name__ == "__main__":
     # --- Training Parameters ---
     
     # Base parameters
-    num_neurons = 1024
+    num_neurons = 256
     seq_len = 10
     action_dim = 32
     # relu, gelu, tanh
-    activation = 'tanh'
-    batch_size = 32
+    activation = 'gelu'
+    batch_size = 256
     training_steps = 10
     learning_rate = 1e-3
 

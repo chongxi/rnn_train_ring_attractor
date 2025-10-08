@@ -181,25 +181,25 @@ void fwd_n128_a23_global_launcher_impl(
         );
     }
     
-    // dim3 blockSize2(128);
-    // dim3 gridSize2(batch_size, (N + 7) / 8, seq_len);
+    dim3 blockSize2(128);
+    dim3 gridSize2(batch_size, (N + 7) / 8, seq_len);
 
-    // fwd_compute_r7_kernel<<<gridSize2, blockSize2>>>(
-    //     static_cast<const float*>(bump_history),
-    //     static_cast<const float*>(W_delta7),
-    //     static_cast<float*>(r_history),
-    //     N, seq_len
-    // );
+    fwd_compute_r7_kernel<<<gridSize2, blockSize2>>>(
+        static_cast<const float*>(bump_history),
+        static_cast<const float*>(W_delta7),
+        static_cast<float*>(r_history),
+        N, seq_len
+    );
 
-    // dim3 blockSize3(128);
-    // dim3 gridSize3(batch_size, 1, seq_len);
-    // int num_blocks_y = (N + 127) / 128;
-    // size_t smem_size3 = num_blocks_y * sizeof(float);
+    dim3 blockSize3(128);
+    dim3 gridSize3(batch_size, 1, seq_len);
+    int num_blocks_y = (N + 127) / 128;
+    size_t smem_size3 = num_blocks_y * sizeof(float);
 
-    // fwd_normalize_r7_kernel<<<gridSize3, blockSize3, smem_size3>>>(
-    //     static_cast<float*>(r_history),
-    //     N, seq_len
-    // );
+    fwd_normalize_r7_kernel<<<gridSize3, blockSize3, smem_size3>>>(
+        static_cast<float*>(r_history),
+        N, seq_len
+    );
 }
 
 void fwd_n128_a23_global_launcher(

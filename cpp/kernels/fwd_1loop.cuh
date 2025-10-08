@@ -13,7 +13,7 @@ __device__ __forceinline__ float activation(float x) {
     }
 }
 
-template<Activation ACT>
+template<Activation ACT, int SPLIT, int BLOCKSIZE>
 __global__ void fwd_update_r_kernel(
     const float* A,
     const float* Wa,
@@ -29,13 +29,12 @@ __global__ void fwd_update_r_kernel(
     int t
 ){
     auto cta = cg::this_thread_block();
-    auto tile = cg::tiled_partition<128>(cta);
+    auto tile = cg::tiled_partition<BLOCKSIZE>(cta);
     
     int batch_idx = blockIdx.x;
-    int base_neuron = blockIdx.y * 4;
+    int base_neuron = blockIdx.y * SPLIT;
     bool is_first = (t == 0);
     
-    // Load A into shared memory - all threads cooperate
     extern __shared__ float smem[];
     float* s_A = smem;
     
@@ -44,13 +43,13 @@ __global__ void fwd_update_r_kernel(
     }
     __syncthreads();
     
-    for (int offset = 0; offset < 4; ++offset){
+    for (int offset = 0; offset < SPLIT; ++offset){
         int neuron_idx = base_neuron + offset;
         if (neuron_idx >= n_neur) break;
         
         float ri_local = 0.f;
         
-        for (int j = tile.thread_rank(); j < n_neur; j += 128){
+        for (int j = tile.thread_rank(); j < n_neur; j += BLOCKSIZE){
             float wa_weighted = 0.f;
             for (int a = 0; a < a_dim; ++a){
                 wa_weighted += s_A[a] * Wa[a * n_neur * n_neur + neuron_idx * n_neur + j];
@@ -91,12 +90,15 @@ void fwd_n128_a23_global_launcher_impl(
     int seq_len,
     int batch_size
 ){
-    dim3 blockSize(128);
-    dim3 gridSize(batch_size, (N + 3) / 4);
+    constexpr int SPLIT = 2;
+    constexpr int BLOCKSIZE = 64;
+    
+    dim3 blockSize(BLOCKSIZE);
+    dim3 gridSize(batch_size, (N + SPLIT - 1) / SPLIT);
     size_t smem_size = a_dim * sizeof(float);
 
     for (int t = 0; t < seq_len; ++t){
-        fwd_update_r_kernel<ACT><<<gridSize, blockSize, smem_size>>>(
+        fwd_update_r_kernel<ACT, SPLIT, BLOCKSIZE><<<gridSize, blockSize, smem_size>>>(
             static_cast<const float*>(A),
             static_cast<const float*>(Wa),
             J0, J1,
