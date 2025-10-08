@@ -5,3 +5,4 @@ build
 .vscode/
 dquery.cu
 dquery
+cpp/profile.*

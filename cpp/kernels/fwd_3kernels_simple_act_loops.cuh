@@ -97,38 +97,26 @@ __global__ void fwd_normalize_r7_kernel(
     int seq_len,
     int t
 ){
-    extern __shared__ float tile_max[];
-    
-    auto tile = cg::tiled_partition<128>(cg::this_thread_block());
+    __shared__ float shared_max;
     
     int batch_idx = blockIdx.x;
-    int num_tiles = (n_neur + 127) / 128;
+    int tid = threadIdx.x;
+    int base = batch_idx * seq_len * n_neur + t * n_neur;
     
-    for (int tile_idx = 0; tile_idx < num_tiles; ++tile_idx){
-        int neuron_idx = tile_idx * 128 + tile.thread_rank();
-        float r7 = (neuron_idx < n_neur) ? 
-            r_history[batch_idx * seq_len * n_neur + t * n_neur + neuron_idx] : -INFINITY;
-        
-        float local_max = cg::reduce(tile, r7, cg::greater<float>());
-        
-        if (tile.thread_rank() == 0){
-            tile_max[tile_idx] = local_max;
-        }
-    }
-    
+    if (tid == 0) shared_max = -INFINITY;
     __syncthreads();
     
-    float global_max = tile_max[0];
-    if (tile.thread_rank() < num_tiles){
-        for (int i = tile.thread_rank(); i < num_tiles; i += 128){
-            global_max = fmaxf(global_max, tile_max[i]);
-        }
+    // Find max
+    float local_max = -INFINITY;
+    for (int i = tid; i < n_neur; i += 128){
+        local_max = fmaxf(local_max, r_history[base + i]);
     }
-    global_max = cg::reduce(tile, global_max, cg::greater<float>());
+    atomicMax((int*)&shared_max, __float_as_int(local_max));
+    __syncthreads();
     
-    for (int neuron_idx = tile.thread_rank(); neuron_idx < n_neur; neuron_idx += 128){
-        float r7 = r_history[batch_idx * seq_len * n_neur + t * n_neur + neuron_idx];
-        r_history[batch_idx * seq_len * n_neur + t * n_neur + neuron_idx] = r7 / global_max;
+    // Normalize
+    for (int i = tid; i < n_neur; i += 128){
+        r_history[base + i] /= shared_max;
     }
 }
 

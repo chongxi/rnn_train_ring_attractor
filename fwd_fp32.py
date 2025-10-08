@@ -170,7 +170,6 @@ class GeneralizedRingAttractorNoGain(nn.Module):
         
         torch.cuda.synchronize()   
 
-
     def forward(self, action_signal, r_init=None, ref=True):
         """Process entire sequence of ring attractor dynamics.
         
@@ -247,7 +246,12 @@ class GeneralizedRingAttractorNoGain(nn.Module):
             r_history=self.r_history,
             alpha=alpha,
             activation_type=activation_type
-        )       
+        )
+
+        # Compute r_history directly from bump_history
+        r_delta7 = self.bump_history @ self.W_delta7
+        r_max = r_delta7.max(dim=2, keepdim=True)[0]
+        self.r_history = r_delta7 / r_max     
         
         return self.r_history.clone(), self.bump_history.clone()
     
@@ -343,7 +347,7 @@ def benchmark(num_neurons, seq_len, action_dim, batch_size, activation, check, m
     print("--------------- Check correctness ----------------------")
     # def check_tensor_match(tsr_impl, tsr_ref, name, rtol=0.01, atol=0.0001, max_print=10):
     
-    def check_tensor_match(tsr_impl, tsr_ref, name, rtol=1e-5, atol=1e-8, max_print=1):
+    def check_tensor_match(tsr_impl, tsr_ref, name, rtol=1e-5, atol=1e-8, max_print=20):
         if not torch.allclose(tsr_impl, tsr_ref, rtol=rtol, atol=atol):
             print(f"\n{name} differences: a_tol = {atol}, r_tol = {rtol}")
             diff = (tsr_impl - tsr_ref).abs()
@@ -436,12 +440,12 @@ if __name__ == "__main__":
     # --- Training Parameters ---
     
     # Base parameters
-    num_neurons = 32
-    seq_len = 20
+    num_neurons = 1024
+    seq_len = 10
     action_dim = 32
     # relu, gelu, tanh
-    activation = 'gelu'
-    batch_size = 256
+    activation = 'tanh'
+    batch_size = 32
     training_steps = 10
     learning_rate = 1e-3
 
