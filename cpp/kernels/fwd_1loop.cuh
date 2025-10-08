@@ -32,7 +32,7 @@ __global__ void fwd_update_r_kernel(
     auto tile = cg::tiled_partition<128>(cta);
     
     int batch_idx = blockIdx.x;
-    int base_neuron = blockIdx.y * 8;
+    int base_neuron = blockIdx.y * 4;
     bool is_first = (t == 0);
     
     // Load A into shared memory - all threads cooperate
@@ -44,7 +44,7 @@ __global__ void fwd_update_r_kernel(
     }
     __syncthreads();
     
-    for (int offset = 0; offset < 8; ++offset){
+    for (int offset = 0; offset < 4; ++offset){
         int neuron_idx = base_neuron + offset;
         if (neuron_idx >= n_neur) break;
         
@@ -92,7 +92,7 @@ void fwd_n128_a23_global_launcher_impl(
     int batch_size
 ){
     dim3 blockSize(128);
-    dim3 gridSize(batch_size, (N + 7) / 8);
+    dim3 gridSize(batch_size, (N + 3) / 4);
     size_t smem_size = a_dim * sizeof(float);
 
     for (int t = 0; t < seq_len; ++t){
