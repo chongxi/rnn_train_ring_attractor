@@ -290,7 +290,8 @@ def benchmark(num_neurons, seq_len, action_dim, batch_size, activation, check_fo
         dt=1,
         activation=activation,
         initialization='random',
-        device=device
+        device=device,
+        use_matmul=True
     )
 
     ring_rnn_ref.to(device)

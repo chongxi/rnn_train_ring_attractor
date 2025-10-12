@@ -307,7 +307,9 @@ if __name__ == "__main__":
     av_signal_fp32 = av_to_action_signal_ND(av_signal_fp32, action_dim)
     initial_angle_fp32 = target_angle_fp32[:, 0]
     r_init_fp32 = create_initial_bump(initial_angle_fp32, num_neurons, device=device)
-    
+
+
+
     # Forward pass
     r_init_impl = r_init_fp32.detach().clone()
     r_init_ref = r_init_fp32.detach().clone()
@@ -325,21 +327,62 @@ if __name__ == "__main__":
     check_tensor_match(predicted_cosine_wave, predicted_cosine_wave_ref, "r_history", rtol=1e-4, atol=1e-6)
     # check_tensor_match(predicted_cosine_wave, predicted_cosine_wave_ref, "r_history")
 
-    # print("---------------------------------------------------------------------")
-
-    print("bump_history: ")
-    print("torch.sum : ", bump_activity_ref[0, 0, :10].cpu().numpy())
-    print("torch.matmul: ", bump_activity[0, 0, :10].cpu().numpy())
-
-    print("r_history: ")
-    print("torch.sum: ", predicted_cosine_wave_ref[0, 0, :10].cpu().numpy())
-    print("torch.matmul: ", predicted_cosine_wave[0, 0, :10].cpu().numpy())
-
-
-    print("---------------------------------------------------------------------")
+    print("--------------- Measure latency Forward ----------------------")
 
     lat_ring_rnn = measure_latency_cuda(ring_rnn_matmul, av_signal_fp32, r_init=r_init_impl)
     lat_ring_rnn_ref = measure_latency_cuda(ring_rnn_normal, av_signal_fp32, r_init=r_init_ref)
 
     print("torch.matmul latency:", lat_ring_rnn)
     print("torch.sum latency:", lat_ring_rnn_ref)    
+
+    print("--------------- Check correctness Backward ----------------------")
+
+    # Re-enable gradients and training mode
+    ring_rnn_matmul.train()
+    ring_rnn_normal.train()
+    for param in ring_rnn_matmul.parameters():
+        param.requires_grad = True
+    for param in ring_rnn_normal.parameters():
+        param.requires_grad = True
+
+    # Re-run forward pass with gradients
+    av_signal_grad = av_signal_fp32.detach().requires_grad_(False)
+    r_init_matmul_grad = r_init_fp32.detach().clone()
+    r_init_normal_grad = r_init_fp32.detach().clone()
+
+    predicted_cosine_wave_grad, _ = ring_rnn_matmul(av_signal_grad, r_init=r_init_matmul_grad)
+    predicted_cosine_wave_ref_grad, _ = ring_rnn_normal(av_signal_grad, r_init=r_init_normal_grad)
+
+    # Compute loss and backward
+    loss_matmul = cosine_similarity_loss(predicted_cosine_wave_grad, target_angle_fp32)
+    loss_normal = cosine_similarity_loss(predicted_cosine_wave_ref_grad, target_angle_fp32)
+
+    loss_matmul.backward()
+    loss_normal.backward()
+
+    # Check gradients
+    check_tensor_match(ring_rnn_matmul.Wo.grad, ring_rnn_normal.Wo.grad, "Wo.grad", rtol=1e-4, atol=1e-6)
+    check_tensor_match(ring_rnn_matmul.Wa.grad, ring_rnn_normal.Wa.grad, "Wa.grad", rtol=1e-4, atol=1e-6)
+
+    print("--------------- Measure latency Backward ----------------------")
+
+    def backward_pass_matmul(av_signal, r_init, target_angle):
+        ring_rnn_matmul.zero_grad()
+        pred, _ = ring_rnn_matmul(av_signal, r_init=r_init.detach().clone())
+        loss = cosine_similarity_loss(pred, target_angle)
+        loss.backward()
+
+    def backward_pass_normal(av_signal, r_init, target_angle):
+        ring_rnn_normal.zero_grad()
+        pred, _ = ring_rnn_normal(av_signal, r_init=r_init.detach().clone())
+        loss = cosine_similarity_loss(pred, target_angle)
+        loss.backward()
+
+    lat_backward_matmul = measure_latency_cuda(backward_pass_matmul, av_signal_grad, r_init_fp32, target_angle_fp32)
+    lat_backward_normal = measure_latency_cuda(backward_pass_normal, av_signal_grad, r_init_fp32, target_angle_fp32)
+
+    print("torch.matmul backward latency:", lat_backward_matmul)
+    print("torch.sum backward latency:", lat_backward_normal)
+
+    
+
