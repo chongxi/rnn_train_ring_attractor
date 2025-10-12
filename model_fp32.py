@@ -341,6 +341,5 @@ if __name__ == "__main__":
     lat_ring_rnn = measure_latency_cuda(ring_rnn_matmul, av_signal_fp32, r_init=r_init_impl)
     lat_ring_rnn_ref = measure_latency_cuda(ring_rnn_normal, av_signal_fp32, r_init=r_init_ref)
 
-
-    print("torch.matmul latency:", lat_ring_rnn_ref)    
-    print("torch.sum latency:", lat_ring_rnn)
+    print("torch.matmul latency:", lat_ring_rnn)
+    print("torch.sum latency:", lat_ring_rnn_ref)    
