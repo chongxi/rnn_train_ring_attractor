@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 import matplotlib.pyplot as plt
-from generate_av_integration_data import AVIntegrationDataset
+from utils.generate_av_integration_data import AVIntegrationDataset
 from train_ring_attractor import LeakyRingAttractor, create_initial_bump, decode_angle_from_population_vector, cosine_similarity_loss, bump_amplitude_loss
 from train_gru import GRU_Integrator, integration_aware_loss
 import time  # Add this import at the top

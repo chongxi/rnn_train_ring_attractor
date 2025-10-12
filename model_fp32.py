@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from generate_av_integration_data import AVIntegrationDataset
+from utils.generate_av_integration_data import AVIntegrationDataset
 
 import random
 import numpy as np
@@ -130,7 +130,7 @@ class GeneralizedRingAttractorNoGain_ref(nn.Module):
     This version directly uses action signals without any gain modulation.
     """
     def __init__(self, num_neurons, action_dim=2, tau=10.0, dt=1.0, activation='tanh',
-                 initialization='random', device='cuda'):
+                 initialization='random', device='cuda', use_matmul='True'):
         super().__init__()
         self.num_neurons = num_neurons
         self.action_dim = action_dim
@@ -139,7 +139,8 @@ class GeneralizedRingAttractorNoGain_ref(nn.Module):
         self.activation_name = activation
         self.initialization = initialization
         self.device = device
-        
+        self.use_matmul = use_matmul
+
         # Convert indices to bfloat16
         indices = torch.arange(self.num_neurons, dtype=torch.float32)
         i = indices.unsqueeze(1)
@@ -186,6 +187,8 @@ class GeneralizedRingAttractorNoGain_ref(nn.Module):
         # NO GAIN COMPUTATION - directly use action signals
         A = action_signal  # (batch, seq, action_dim)
 
+        N = self.num_neurons
+
         for t in range(seq_len):
             # Get action vector at time t
             A_t = A[:, t, :]  # (batch, action_dim)
@@ -195,11 +198,17 @@ class GeneralizedRingAttractorNoGain_ref(nn.Module):
             # A_t has shape (batch, action_dim)
             # We need to compute sum_k(A_t[k] * Wa[k]) for each batch
 
-            # Reshape A_t to (batch, action_dim, 1, 1) for broadcasting
-            A_t_expanded = A_t.unsqueeze(-1).unsqueeze(-1)
+            # # Reshape A_t to (batch, action_dim, 1, 1) for broadcasting
+            # A_t_expanded = A_t.unsqueeze(-1).unsqueeze(-1)
 
-            # Compute weighted sum: (batch, action_dim, 1, 1) * (action_dim, N, N) -> (batch, N, N)
-            Wa_weighted = torch.sum(A_t_expanded * self.Wa.unsqueeze(0), dim=1)
+            # # Compute weighted sum: (batch, action_dim, 1, 1) * (action_dim, N, N) -> (batch, N, N)
+            # Wa_weighted = torch.sum(A_t_expanded * self.Wa.unsqueeze(0), dim=1)
+            if self.use_matmul == True:
+                Wa_flat = self.Wa.view(action_dim, N * N)
+                Wa_weighted = torch.matmul(A_t, Wa_flat).view(batch_size, N, N)
+            else:
+                A_t_expanded = A_t.unsqueeze(-1).unsqueeze(-1)
+                Wa_weighted = torch.sum(A_t_expanded * self.Wa.unsqueeze(0), dim=1)
 
             # Effective weight matrix
             W_eff = self.J0 + self.J1 * self.Wo + Wa_weighted
@@ -207,6 +216,7 @@ class GeneralizedRingAttractorNoGain_ref(nn.Module):
             # Recurrent dynamics
             recurrent_input = (W_eff @ r.unsqueeze(2)).squeeze(2)
             recurrent_input = non_linear(recurrent_input, self.activation_name)
+            
 
             # Update rule (leaky integration)
             alpha = 0.15
@@ -216,9 +226,120 @@ class GeneralizedRingAttractorNoGain_ref(nn.Module):
 
             # Transform to cosine wave for output
             r_delta7 = r @ self.W_delta7
+            # r_delta7 = non_linear(r, self.activation_name) @ self.W_delta7
             r_max = r_delta7.max(dim=1, keepdim=True)[0]
             r_delta7 = r_delta7 / r_max
 
             r_history.append(r_delta7)
 
         return torch.stack(r_history, dim=1), torch.stack(bump_history, dim=1)
+
+if __name__ == "__main__":
+
+    from utils.benchmark import *
+
+    # --- Training Parameters ---
+    
+    # Base parameters
+    num_neurons = 256
+    seq_len = 128
+    action_dim = 32
+    # relu, gelu, tanh
+    activation = 'relu'
+    batch_size = 128
+    training_steps = 10
+    learning_rate = 1e-3
+
+    device = torch.device("cuda")
+
+    dataset = AVIntegrationDataset(
+        num_samples=training_steps * batch_size,
+        seq_len=seq_len,
+        zero_padding_start_ratio=0.1,
+        zero_ratios_in_rest=[0.2, 0.5, 0.8],
+        device=device,
+        fast_mode=True
+    )
+
+    set_seed(42)
+
+    ring_rnn_normal = GeneralizedRingAttractorNoGain_ref(
+        num_neurons=num_neurons,
+        action_dim=action_dim,
+        tau=10,
+        dt=1,
+        activation=activation,
+        initialization='random',
+        device=device,
+        use_matmul=False
+    )
+
+    ring_rnn_normal.to(device)
+    ring_rnn_normal.eval()
+    for param in ring_rnn_normal.parameters():
+        param.requires_grad = False
+
+    set_seed(42)
+
+    ring_rnn_matmul = GeneralizedRingAttractorNoGain_ref(
+        num_neurons=num_neurons,
+        action_dim=action_dim,
+        tau=10,
+        dt=1,
+        activation=activation,
+        initialization='random',
+        device=device,
+        use_matmul=True
+    )
+
+    ring_rnn_matmul.to(device)
+    ring_rnn_matmul.eval()
+    for param in ring_rnn_matmul.parameters():
+        param.requires_grad = False
+
+    ##############################################################################
+
+    av_signal, target_angle = dataset.generate_batch(batch_size)
+
+    av_signal_fp32 = av_signal.to(torch.float32)
+    target_angle_fp32 = target_angle.to(torch.float32)
+
+    av_signal_fp32 = av_to_action_signal_ND(av_signal_fp32, action_dim)
+    initial_angle_fp32 = target_angle_fp32[:, 0]
+    r_init_fp32 = create_initial_bump(initial_angle_fp32, num_neurons, device=device)
+    
+    # Forward pass
+    r_init_impl = r_init_fp32.detach().clone()
+    r_init_ref = r_init_fp32.detach().clone()
+
+
+    predicted_cosine_wave, bump_activity = ring_rnn_matmul(av_signal_fp32, r_init=r_init_impl)
+    predicted_cosine_wave_ref, bump_activity_ref = ring_rnn_normal(av_signal_fp32, r_init=r_init_ref)
+
+    ##########################################################
+
+    print("--------------- Check correctness Forward ----------------------")
+
+    check_tensor_match(tsr_impl=bump_activity, tsr_ref=bump_activity_ref, name="bump_history", rtol=1e-7, atol=1e-5)
+
+    check_tensor_match(predicted_cosine_wave, predicted_cosine_wave_ref, "r_history", rtol=1e-4, atol=1e-6)
+    # check_tensor_match(predicted_cosine_wave, predicted_cosine_wave_ref, "r_history")
+
+    # print("---------------------------------------------------------------------")
+
+    print("bump_history: ")
+    print("ref : ", bump_activity_ref[0, 0, :10].cpu().numpy())
+    print("impl: ", bump_activity[0, 0, :10].cpu().numpy())
+
+    print("r_history: ")
+    print("ref : ", predicted_cosine_wave_ref[0, 0, :10].cpu().numpy())
+    print("impl: ", predicted_cosine_wave[0, 0, :10].cpu().numpy())
+
+
+    print("---------------------------------------------------------------------")
+
+    lat_ring_rnn = measure_latency_cuda(ring_rnn_matmul, av_signal_fp32, r_init=r_init_impl)
+    lat_ring_rnn_ref = measure_latency_cuda(ring_rnn_normal, av_signal_fp32, r_init=r_init_ref)
+
+    print("ring_rnn latency:", lat_ring_rnn)
+    print("ring_rnn_ref latency:", lat_ring_rnn_ref)    

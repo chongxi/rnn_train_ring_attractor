@@ -1,22 +1,11 @@
 import torch
 import torch.nn as nn
-from generate_av_integration_data import AVIntegrationDataset
+from utils.generate_av_integration_data import AVIntegrationDataset
 from model_fp32 import GeneralizedRingAttractorNoGain_ref
-import random
 import numpy as np
 
 from rnn_cuda import *
-
-torch.set_printoptions(linewidth=200)
-np.set_printoptions(linewidth=200, precision=6, suppress=True)
-
-def set_seed(seed=42):
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)
+from utils.benchmark import *
 
 #################################################################################################
 #################################################################################################
@@ -234,7 +223,7 @@ class GeneralizedRingAttractorNoGain(nn.Module):
         activation_map = {'relu': 0, 'gelu': 1, 'tanh': 2}
         activation_type = activation_map.get(self.activation_name, 0)
 
-        rnn_cuda.fwd(
+        fwd_cuda.fwd(
             A=action_signal, 
             Wa=self.Wa,
             J0=self.J0,
@@ -250,12 +239,13 @@ class GeneralizedRingAttractorNoGain(nn.Module):
 
         # Compute r_history directly from bump_history
         r_delta7 = self.bump_history @ self.W_delta7
+        # r_delta7 = non_linear(self.bump_history, self.activation_name) @ self.W_delta7
         r_max = r_delta7.max(dim=2, keepdim=True)[0]
         self.r_history = r_delta7 / r_max     
         
         return self.r_history.clone(), self.bump_history.clone()
     
-def benchmark(num_neurons, seq_len, action_dim, batch_size, activation, check, measure_latency):
+def benchmark(num_neurons, seq_len, action_dim, batch_size, activation, check_forward, check_backward, measure_latency):
     assert torch.cuda.is_available(), "CUDA GPU not detected. Exiting."
     device = torch.device("cuda")
 
@@ -273,7 +263,6 @@ def benchmark(num_neurons, seq_len, action_dim, batch_size, activation, check, m
 
     set_seed(42)
     
-
     ring_rnn = GeneralizedRingAttractorNoGain(
         batch_size=batch_size,
         seq_len=seq_len,
@@ -309,15 +298,6 @@ def benchmark(num_neurons, seq_len, action_dim, batch_size, activation, check, m
     for param in ring_rnn_ref.parameters():
         param.requires_grad = False
 
-    # print("--------------- Model params ----------------------")
-
-    # print("J0:", ring_rnn.J0.shape, ring_rnn.J0.dtype, ring_rnn.J0.device) 
-    # print("W_delta7:", ring_rnn.W_delta7.shape, ring_rnn.W_delta7.dtype, ring_rnn.W_delta7.device)
-    # print("Wo:", ring_rnn.Wo.shape, ring_rnn.Wo.dtype, ring_rnn.Wo.device)
-    # print("Wa:", ring_rnn.Wa.shape, ring_rnn.Wa.dtype, ring_rnn.Wa.device)
-
-    # print("--------------- Data params ----------------------")
-
     av_signal, target_angle = dataset.generate_batch(batch_size)
 
     av_signal_fp32 = av_signal.to(torch.float32)
@@ -326,16 +306,7 @@ def benchmark(num_neurons, seq_len, action_dim, batch_size, activation, check, m
     av_signal_fp32 = av_to_action_signal_ND(av_signal_fp32, action_dim)
     initial_angle_fp32 = target_angle_fp32[:, 0]
     r_init_fp32 = create_initial_bump(initial_angle_fp32, num_neurons, device=device)
-
-
-
-    # print("av_signal:", av_signal_fp32.shape, av_signal_fp32.dtype, av_signal_fp32.device)
-    # print("target_angle:", target_angle_fp32.shape, target_angle_fp32.dtype, target_angle_fp32.device)
-    # print("r_init_fp32:", r_init_fp32.shape, r_init_fp32.dtype, r_init_fp32.device)
-    # print("initial_angle:", initial_angle_fp32.shape, initial_angle_fp32.dtype, initial_angle_fp32.device)
-
     
-
     # Forward pass
     r_init_impl = r_init_fp32.detach().clone()
     r_init_ref = r_init_fp32.detach().clone()
@@ -344,48 +315,9 @@ def benchmark(num_neurons, seq_len, action_dim, batch_size, activation, check, m
     predicted_cosine_wave, bump_activity = ring_rnn(av_signal_fp32, r_init=r_init_impl)
     predicted_cosine_wave_ref, bump_activity_ref = ring_rnn_ref(av_signal_fp32, r_init=r_init_ref)
     
-    print("--------------- Check correctness ----------------------")
-    # def check_tensor_match(tsr_impl, tsr_ref, name, rtol=0.01, atol=0.0001, max_print=10):
-    
-    def check_tensor_match(tsr_impl, tsr_ref, name, rtol=1e-5, atol=1e-8, max_print=1):
-        if not torch.allclose(tsr_impl, tsr_ref, rtol=rtol, atol=atol):
-            print(f"\n{name} differences: a_tol = {atol}, r_tol = {rtol}")
-            diff = (tsr_impl - tsr_ref).abs()
-            rdiff = diff / (torch.abs(tsr_ref) + atol)
-            mismatch = ~torch.isclose(tsr_impl, tsr_ref, rtol=rtol, atol=atol)
-            num_mismatched = mismatch.sum().item()
-            total_elements = tsr_impl.numel()
-            percentage = (num_mismatched / total_elements) * 100
-            all_indices = torch.nonzero(mismatch)
-            first_indices = all_indices[:max_print]
-            last_indices = all_indices[-max_print:] if len(all_indices) > max_print else torch.empty(0, 3, dtype=torch.long)
-            
-            print("Mismatch at                 ref         impl        diff        rdiff")
-            print("---------------------------------------------------------------------")
-            print("First mismatches:")
-            for idx in first_indices:
-                b, t, n = idx
-                print(f"[batch={b:2d},t={t:3d},n={n:3d}]: {tsr_ref[b,t,n]:10.6f} {tsr_impl[b,t,n]:10.6f} {diff[b,t,n]:10.6f} {rdiff[b,t,n]:10.6f}")
-            
-            if len(all_indices) > max_print:
-                print("...")
-                print("Last mismatches:")
-                for idx in last_indices:
-                    b, t, n = idx
-                    print(f"[batch={b:2d},t={t:3d},n={n:3d}]: {tsr_ref[b,t,n]:10.6f} {tsr_impl[b,t,n]:10.6f} {diff[b,t,n]:10.6f} {rdiff[b,t,n]:10.6f}")
-            
-            print(f"Total mismatched elements: {num_mismatched} out of {total_elements} ({percentage:.1f}%)")
-            print(f"diff: {diff.mean():.6f} ± {diff.std():.6f}")
-            print(f"rdiff: {rdiff.mean():.6f} ± {rdiff.std():.6f}")
-            return False
-        else:
-            print(f"{name} match!")
-            return True
+    if check_forward:
 
-    # Check both tensors
-    # check_tensor_match(tsr_impl=predicted_cosine_wave, tsr_ref=predicted_cosine_wave_ref, name="Cosine waves", max_print=20)
-    
-    if check:
+        print("--------------- Check correctness Forward ----------------------")
 
         check_tensor_match(tsr_impl=bump_activity, tsr_ref=bump_activity_ref, name="bump_history", rtol=1e-7, atol=1e-5)
 
@@ -402,29 +334,24 @@ def benchmark(num_neurons, seq_len, action_dim, batch_size, activation, check, m
         print("ref : ", predicted_cosine_wave_ref[0, 0, :10].cpu().numpy())
         print("impl: ", predicted_cosine_wave[0, 0, :10].cpu().numpy())
 
-    def measure_latency_cuda(fn, *args, n_warmup=2, n_iters=20, **kwargs):
-        start_event = torch.cuda.Event(enable_timing=True)
-        end_event = torch.cuda.Event(enable_timing=True)
+    # # Compute losses before detach
+    # loss = cosine_similarity_loss(predicted_cosine_wave, target_angle) + 0.2 * bump_amplitude_loss(bump_activity)
+    # loss_ref = cosine_similarity_loss(predicted_cosine_wave_ref, target_angle) + 0.2 * bump_amplitude_loss(bump_activity_ref)
 
-        # Warmup
-        for _ in range(n_warmup):
-            fn(*args, **kwargs)
-        torch.cuda.synchronize()
+    # loss.backward()
+    # loss_ref.backward()
 
-        times = []
-        for _ in range(n_iters):
-            start_event.record()
-            fn(*args, **kwargs)
-            end_event.record()
+    # predicted_cosine_wave, bump_activity = predicted_cosine_wave.detach(), bump_activity.detach()
+    # predicted_cosine_wave_ref, bump_activity_ref = predicted_cosine_wave_ref.detach(), bump_activity_ref.detach()
 
-            torch.cuda.synchronize()
-            times.append(start_event.elapsed_time(end_event))  # ms
+    # if check_backward:
 
-        times = torch.tensor(times, device="cpu")
-        mean = times.mean().item()
-        std = times.std(unbiased=False).item()
-        return f"{mean:.3f} ± {std:.3f} ms"
-    
+    #     print("--------------- Check correctness Forward ----------------------")
+    #     for (name_impl, param_impl), (name_ref, param_ref) in zip(ring_rnn.named_parameters(), ring_rnn_ref.named_parameters()):
+    #         if param_impl.grad is not None and param_ref.grad is not None:
+    #             check_tensor_match(param_impl.grad, param_ref.grad, f"grad_{name_impl}", rtol=1e-4, atol=1e-6)
+
+
     if measure_latency:
         print("---------------------------------------------------------------------")
 
@@ -441,20 +368,21 @@ if __name__ == "__main__":
     
     # Base parameters
     num_neurons = 256
-    seq_len = 10
+    seq_len = 128
     action_dim = 32
     # relu, gelu, tanh
-    activation = 'gelu'
-    batch_size = 256
+    activation = 'relu'
+    batch_size = 128
     training_steps = 10
     learning_rate = 1e-3
 
     print("BASE PARAMETERS: ")
-    check_correctness = True
+    check_correctness_forward = True
+    check_correctness_backward = True
     measure_latency = True
 
     print(f"batch_size: {batch_size} num_neurons: {num_neurons}, action dim: {action_dim}, seq_len {seq_len}, activation: {activation}:")
-    benchmark(num_neurons=num_neurons, seq_len=seq_len, action_dim=action_dim, batch_size=batch_size, activation=activation, check=check_correctness, measure_latency=measure_latency) 
+    benchmark(num_neurons=num_neurons, seq_len=seq_len, action_dim=action_dim, batch_size=batch_size, activation=activation, check_forward=check_correctness_forward, check_backward=check_correctness_backward, measure_latency=measure_latency) 
 
     # =========================================================
     # Uncomment below for comprehensive debugging on local GPU

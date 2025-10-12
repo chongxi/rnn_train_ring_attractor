@@ -7,7 +7,7 @@ import glob
 import subprocess
 
 # Import the cleaned data generation module
-from generate_av_integration_data import AVIntegrationDataset
+from utils.generate_av_integration_data import AVIntegrationDataset
 
 
 def non_linear(x, activation_name):

@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from generate_av_integration_data import AVIntegrationDataset
+from utils.generate_av_integration_data import AVIntegrationDataset
 
 import random
 import numpy as np

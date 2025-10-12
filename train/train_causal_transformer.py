@@ -6,7 +6,7 @@ import math
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
 # Import the data generation module
-from generate_av_integration_data import AVIntegrationDataset
+from utils.generate_av_integration_data import AVIntegrationDataset
 
 
 class PositionalEncoding(nn.Module):

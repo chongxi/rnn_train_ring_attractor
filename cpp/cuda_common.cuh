@@ -5,5 +5,6 @@
 #include <cooperative_groups/reduce.h>
 
 #include <iostream>
+#include <vector>
 
 namespace cg = cooperative_groups;

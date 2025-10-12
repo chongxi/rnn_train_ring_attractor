@@ -4,6 +4,7 @@
 // #include "kernels/fwd_3kernels_simple_act_loops.cuh"
 // #include "kernels/fwd_loops_opt.cuh"
 #include "kernels/fwd_1loop.cuh"
+// #include "kernels/fwd_1loop_tc.cuh"
 
 
 #define CHECK_CUDA_ERROR(val) check((val), #val, __FILE__, __LINE__)

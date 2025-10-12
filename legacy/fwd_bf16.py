@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from generate_av_integration_data import AVIntegrationDataset
+from utils.generate_av_integration_data import AVIntegrationDataset
 from model_bf16 import GeneralizedRingAttractorNoGain_ref
 
 torch.set_printoptions(linewidth=200)
