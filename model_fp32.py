@@ -328,12 +328,12 @@ if __name__ == "__main__":
     # print("---------------------------------------------------------------------")
 
     print("bump_history: ")
-    print("ref : ", bump_activity_ref[0, 0, :10].cpu().numpy())
-    print("impl: ", bump_activity[0, 0, :10].cpu().numpy())
+    print("torch.sum : ", bump_activity_ref[0, 0, :10].cpu().numpy())
+    print("torch.matmul: ", bump_activity[0, 0, :10].cpu().numpy())
 
     print("r_history: ")
-    print("ref : ", predicted_cosine_wave_ref[0, 0, :10].cpu().numpy())
-    print("impl: ", predicted_cosine_wave[0, 0, :10].cpu().numpy())
+    print("torch.sum: ", predicted_cosine_wave_ref[0, 0, :10].cpu().numpy())
+    print("torch.matmul: ", predicted_cosine_wave[0, 0, :10].cpu().numpy())
 
 
     print("---------------------------------------------------------------------")
@@ -341,5 +341,6 @@ if __name__ == "__main__":
     lat_ring_rnn = measure_latency_cuda(ring_rnn_matmul, av_signal_fp32, r_init=r_init_impl)
     lat_ring_rnn_ref = measure_latency_cuda(ring_rnn_normal, av_signal_fp32, r_init=r_init_ref)
 
-    print("ring_rnn latency:", lat_ring_rnn)
-    print("ring_rnn_ref latency:", lat_ring_rnn_ref)    
+
+    print("torch.matmul latency:", lat_ring_rnn_ref)    
+    print("torch.sum latency:", lat_ring_rnn)
