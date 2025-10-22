@@ -123,6 +123,7 @@ class GeneralizedRingAttractorNoGain(nn.Module):
         self.num_neurons = num_neurons
         self.action_dim = action_dim
         self.batch_size = batch_size
+        self.seq_len = seq_len
         self.tau = tau
         self.dt = dt
         self.activation_name = activation
@@ -154,7 +155,8 @@ class GeneralizedRingAttractorNoGain(nn.Module):
         self.r_history = torch.empty(batch_size, seq_len, num_neurons, device='cuda', dtype=torch.float32)
         self.r_history.fill_(0)
 
-        self.bump_history = torch.empty(batch_size, seq_len, num_neurons, device='cuda', dtype=torch.float32)
+        # self.bump_history = torch.empty(batch_size, seq_len, num_neurons, device='cuda', dtype=torch.float32)
+        self.bump_history = torch.empty(seq_len, batch_size, num_neurons, device='cuda', dtype=torch.float32)
         self.bump_history.fill_(0)     
         
         torch.cuda.synchronize()   
@@ -189,7 +191,7 @@ class GeneralizedRingAttractorNoGain(nn.Module):
 
         Final output: 
         - r_history: torch.Size([64, 128, 256])
-        - bump_history: torch.Size([64, 128, 256])
+        - bump_history: torch.Size([128, 64, 256])
 
         /////////////////// Batch size = 1
 
@@ -240,6 +242,9 @@ class GeneralizedRingAttractorNoGain(nn.Module):
         )
 
         # Compute r_history directly from bump_history
+        # self.bump_history = self.bump_history.view(self.batch_size, self.seq_len, self.num_neurons).contiguous()
+        self.bump_history = self.bump_history.permute(1, 0, 2)
+
         r_delta7 = self.bump_history @ self.W_delta7
         # r_delta7 = non_linear(self.bump_history, self.activation_name) @ self.W_delta7
         r_max = r_delta7.max(dim=2, keepdim=True)[0]
@@ -323,9 +328,9 @@ def benchmark(num_neurons, seq_len, action_dim, batch_size, activation, check_fo
 
         print("--------------- Check correctness Forward ----------------------")
 
-        check_tensor_match(tsr_impl=bump_activity, tsr_ref=bump_activity_ref, name="bump_history", rtol=1e-7, atol=1e-5)
+        check_tensor_match(tsr_impl=bump_activity, tsr_ref=bump_activity_ref, name="bump_history", rtol=1e-7, atol=1e-5, max_print=20)
 
-        check_tensor_match(predicted_cosine_wave, predicted_cosine_wave_ref, "r_history", rtol=1e-4, atol=1e-5)
+        check_tensor_match(predicted_cosine_wave, predicted_cosine_wave_ref, "r_history", rtol=1e-4, atol=1e-5, max_print=20)
         # check_tensor_match(predicted_cosine_wave, predicted_cosine_wave_ref, "r_history")
 
         # print("---------------------------------------------------------------------")
@@ -371,12 +376,12 @@ if __name__ == "__main__":
     # --- Training Parameters ---
     
     # Base parameters
-    num_neurons = 256
-    seq_len = 128
-    action_dim = 32
+    num_neurons = 128
+    seq_len = 50
+    action_dim = 64
     # relu, gelu, tanh
     activation = 'gelu'
-    batch_size = 128
+    batch_size = 256
     training_steps = 10
     learning_rate = 1e-3
 

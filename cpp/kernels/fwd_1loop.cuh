@@ -1,18 +1,5 @@
 #include "../cuda_common.cuh"
 
-enum class Activation { RELU, GELU, TANH };
-
-template<Activation ACT>
-__device__ __forceinline__ float activation(float x) {
-    if constexpr (ACT == Activation::RELU) {
-        return fmaxf(x, 0.f);
-    } else if constexpr (ACT == Activation::GELU) {
-        return 0.5f * x * (1.f + tanhf(0.797885f * (x + 0.044715f * x * x * x)));
-    } else { // TANH
-        return tanhf(x);
-    }
-}
-
 template<Activation ACT, int SPLIT, int BLOCKSIZE>
 __global__ void fwd_update_r_kernel(
     const float* A,

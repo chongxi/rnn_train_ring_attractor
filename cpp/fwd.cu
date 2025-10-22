@@ -3,9 +3,9 @@
 // #include "kernels/fwd_128_simple.cuh"
 // #include "kernels/fwd_3kernels_simple_act_loops.cuh"
 // #include "kernels/fwd_loops_opt.cuh"
-#include "kernels/fwd_1loop.cuh"
-// #include "kernels/fwd_1loop_tc.cuh"
-
+// #include "kernels/fwd_1loop.cuh"
+#include "kernels/fwd_1loop_tc_idx.cuh"
+// #include  "kernels/fwd_fp32.cuh"
 
 #define CHECK_CUDA_ERROR(val) check((val), #val, __FILE__, __LINE__)
 void check(cudaError_t err, char const* func, char const* file, int line)

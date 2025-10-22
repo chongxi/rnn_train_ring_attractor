@@ -24,8 +24,8 @@ def non_linear(x, activation_name):
     elif activation_name == 'relu':
         return torch.relu(x)
     elif activation_name == 'gelu':
-        # return torch.nn.functional.gelu(x)
-        return torch.nn.functional.gelu(x, approximate='tanh')
+        return torch.nn.functional.gelu(x)
+        # return torch.nn.functional.gelu(x, approximate='tanh')
     else:
         raise ValueError(f"Activation function {activation_name} not supported")
 
@@ -186,23 +186,11 @@ class GeneralizedRingAttractorNoGain_ref(nn.Module):
 
         # NO GAIN COMPUTATION - directly use action signals
         A = action_signal  # (batch, seq, action_dim)
-
         N = self.num_neurons
 
         for t in range(seq_len):
             # Get action vector at time t
-            A_t = A[:, t, :]  # (batch, action_dim)
-
-            # Compute weighted sum of action matrices
-            # Wa has shape (action_dim, num_neurons, num_neurons)
-            # A_t has shape (batch, action_dim)
-            # We need to compute sum_k(A_t[k] * Wa[k]) for each batch
-
-            # # Reshape A_t to (batch, action_dim, 1, 1) for broadcasting
-            # A_t_expanded = A_t.unsqueeze(-1).unsqueeze(-1)
-
-            # # Compute weighted sum: (batch, action_dim, 1, 1) * (action_dim, N, N) -> (batch, N, N)
-            # Wa_weighted = torch.sum(A_t_expanded * self.Wa.unsqueeze(0), dim=1)
+            A_t = A[:, t, :]
             if self.use_matmul == True:
                 Wa_flat = self.Wa.view(action_dim, N * N)
                 Wa_weighted = torch.matmul(A_t, Wa_flat).view(batch_size, N, N)
@@ -210,18 +198,11 @@ class GeneralizedRingAttractorNoGain_ref(nn.Module):
                 A_t_expanded = A_t.unsqueeze(-1).unsqueeze(-1)
                 Wa_weighted = torch.sum(A_t_expanded * self.Wa.unsqueeze(0), dim=1)
 
-            # Effective weight matrix
             W_eff = self.J0 + self.J1 * self.Wo + Wa_weighted
-
-            # Recurrent dynamics
-            recurrent_input = (W_eff @ r.unsqueeze(2)).squeeze(2)
+            recurrent_input = (W_eff @ r.unsqueeze(2)).squeeze(2) # (b, N, N) @ (b, N, 1) = (b, N, 1)
             recurrent_input = non_linear(recurrent_input, self.activation_name)
-            
-
-            # Update rule (leaky integration)
             alpha = 0.15
             r = r * (1 - alpha) + recurrent_input * alpha
-
             bump_history.append(r)
 
             # Transform to cosine wave for output
@@ -363,6 +344,56 @@ if __name__ == "__main__":
     # Check gradients
     check_tensor_match(ring_rnn_matmul.Wo.grad, ring_rnn_normal.Wo.grad, "Wo.grad", rtol=1e-4, atol=1e-6)
     check_tensor_match(ring_rnn_matmul.Wa.grad, ring_rnn_normal.Wa.grad, "Wa.grad", rtol=1e-4, atol=1e-6)
+
+    # print("--------------- Gradcheck (numerical gradient verification) ----------------------")
+
+    # from torch.autograd import gradcheck
+
+    # # Use tiny inputs for gradcheck
+    # batch_size_tiny = 1
+    # seq_len_tiny = 2
+    # num_neurons_tiny = 16
+    # action_dim_tiny = 4
+
+    # # Create tiny model
+    # ring_rnn_tiny = GeneralizedRingAttractorNoGain_ref(
+    #     num_neurons=num_neurons_tiny,
+    #     action_dim=action_dim_tiny,
+    #     tau=10,
+    #     dt=1,
+    #     activation=activation,
+    #     initialization='random',
+    #     device=device,
+    #     use_matmul=True
+    # ).to(torch.float64)
+
+    # av_signal_tiny = av_to_action_signal_ND(
+    #     torch.randn(batch_size_tiny, seq_len_tiny, device=device, dtype=torch.float64),
+    #     action_dim_tiny
+    # )
+    # r_init_tiny = create_initial_bump(
+    #     torch.rand(batch_size_tiny, device=device, dtype=torch.float64) * 2 * torch.pi,
+    #     num_neurons_tiny,
+    #     device=device
+    # ).to(torch.float64)
+
+    # def gradcheck_wrapper(Wo_flat, Wa_flat):
+    #     Wo = Wo_flat.view(num_neurons_tiny, num_neurons_tiny).to(device)
+    #     Wa = Wa_flat.view(action_dim_tiny, num_neurons_tiny, num_neurons_tiny).to(device)
+    #     ring_rnn_tiny.Wo.data = Wo
+    #     ring_rnn_tiny.Wa.data = Wa
+    #     pred, _ = ring_rnn_tiny(av_signal_tiny, r_init=r_init_tiny)
+    #     return pred.sum()
+
+    # inputs = (
+    #     ring_rnn_tiny.Wo.data.flatten().clone().requires_grad_(True),
+    #     ring_rnn_tiny.Wa.data.flatten().clone().requires_grad_(True)
+    # )
+
+    # gradcheck_passed = gradcheck(gradcheck_wrapper, inputs, eps=1e-6, atol=1e-4)
+    # print(f"Gradcheck: {'PASSED' if gradcheck_passed else 'FAILED'}")
+
+    # ring_rnn_matmul.to(torch.float32)
 
     print("--------------- Measure latency Backward ----------------------")
 

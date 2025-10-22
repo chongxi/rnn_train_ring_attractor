@@ -50,26 +50,27 @@ if force_rebuild:
     for file in build_path.glob("*"):
         file.unlink()
 
+# fwd_cuda = load(
+#     name='fwd',
+#     sources=[f"{dir_path}/cpp/fwd.cu", f"{dir_path}/cpp/fwd.cpp"],
+#     verbose=True,
+#     build_directory=build_dir,
+#     with_cuda=True
+# )
+
 fwd_cuda = load(
     name='fwd',
     sources=[f"{dir_path}/cpp/fwd.cu", f"{dir_path}/cpp/fwd.cpp"],
     verbose=True,
     build_directory=build_dir,
-    with_cuda=True
+    extra_cuda_cflags=[
+        "-lineinfo",          # useful for profiling
+        "-Xptxas=-v",         # print register/shared memory usage
+        # "--ptxas-options=-v", # alternative syntax
+        "-keep",               # keep intermediate files (including .ptx and .cubin)
+        "-arch=sm_120"
+    ]
 )
-
-# module = load(
-#     name='fwd',
-#     sources=[f"{dir_path}/cpp/fwd.cu", f"{dir_path}/cpp/fwd.cpp"],
-#     verbose=True,
-#     build_directory=build_dir,
-#     extra_cuda_cflags=[
-#         # "-lineinfo",          # useful for profiling
-#         "-Xptxas=-v",         # print register/shared memory usage
-#         # "--ptxas-options=-v", # alternative syntax
-#         "-keep"               # keep intermediate files (including .ptx and .cubin)
-#     ]
-# )
 
 # class RnnCudaFunction(torch.autograd.Function):
 #     """
