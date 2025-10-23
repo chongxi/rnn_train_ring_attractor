@@ -16,7 +16,7 @@ __device__ __forceinline__ __nv_bfloat16 cuda_cast<__nv_bfloat16, float>(float x
     return __float2bfloat16(x);
 }
 
-template<int WMMA_M, int WMMA_N, int WMMA_K, typename ComputeType>
+template<int WMMA_M, int WMMA_N, int WMMA_K, typename T>
 __device__ void calc_Weff(wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, float>& frag_Wa_weighted,
     const float* Wo, float J0, float J1)
 {
@@ -42,7 +42,7 @@ __device__ void calc_Weff(wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA
     constexpr int REGS_PER_BLOCK = 2;
 
     size_t threadID_in_warp = threadIdx.x % WARPSIZE;
-    size_t groupID_in_warp = threadID_in_warp / 4;
+    // size_t groupID_in_warp = threadID_in_warp / 4;
     size_t threadID_in_group = threadID_in_warp % 4;
 
     for (int regBlockRow = 0; regBlockRow < NUM_REGBLOCK_ROWS; ++regBlockRow) {
@@ -50,7 +50,7 @@ __device__ void calc_Weff(wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA
             for (int i = 0; i < REGS_PER_BLOCK; ++i) {
                 int regID = (regBlockRow * REGS_PER_BLOCK) +
                        (regBlockCol * NUM_REGBLOCK_ROWS * REGS_PER_BLOCK) + i;
-                size_t rowData = regBlockRow * 8 + groupID_in_warp;
+                // size_t rowData = regBlockRow * 8 + groupID_in_warp;
                 size_t colData = regBlockCol * 8 + threadID_in_group * 2 + i;
 
                 frag_Wa_weighted.x[regID] = J0 + J1 * Wo[colData] + frag_Wa_weighted.x[regID];
@@ -59,13 +59,13 @@ __device__ void calc_Weff(wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA
     }
 }
 
-template<Activation ACT, int BM, int BN, int BK, int WMMA_M, int WMMA_N, int WMMA_K, typename ComputeType>
+template<Activation ACT, int BM, int BN, int BK, int WMMA_M, int WMMA_N, int WMMA_K, typename T>
 __global__ void __launch_bounds__((BN / WMMA_N) * WARPSIZE * (BM / WMMA_M)) fwd_update_r_kernel(
     const float* A,  //[batch_size, seq_len, a_dim]) = [256, 10, 64] TODO: Transposing for better L2 cache hit
     const float* Wa, //[a_dim, n_neur, n_neur] = [64, 128, 128]
     float J0,
     float J1,
-    const float* Wo, //[n_neur, n_neur] = [128, 128] TODO: Make Wo persistent in L2 cache, EXPLORE: L2 Cache thrashing
+    const float* Wo, //[n_neur, n_neur] = [128, 128] TODO: Make Wo persistent in L2 cache. REVIEW: already fits inside L2
     const float* r_init, // [batch_size, n_neur] = [256, 128]
     float* bump_history, // [batch_size, seq_len, n_neur] -> [seq_len, batch_size, n_neur] = [10, 256, 128]
     float alpha,
@@ -81,9 +81,9 @@ __global__ void __launch_bounds__((BN / WMMA_N) * WARPSIZE * (BM / WMMA_M)) fwd_
     IndexWrapper<const float, 2> r_init_idx(r_init, batch_size, n_neur);
     IndexWrapper<float, 3> bump_history_idx(bump_history, seq_len, batch_size, n_neur);
 
-    constexpr int group_size = 16;
+    // constexpr int group_size = 16;
     auto cta = cg::this_thread_block();
-    auto group = cg::tiled_partition<group_size>(cta);
+    // auto group = cg::tiled_partition<group_size>(cta);
     // size_t gr_x = group.thread_rank(); // 0 -> 15
     // size_t gr_y = group.meta_group_rank(); // 0 -> 31
 
@@ -97,8 +97,9 @@ __global__ void __launch_bounds__((BN / WMMA_N) * WARPSIZE * (BM / WMMA_M)) fwd_
     constexpr int lda = ld;
     constexpr int ldb = ld;
 
-    __shared__ ComputeType tileA[BM][ld];
-    __shared__ ComputeType tileB[BN][ld];
+    // TODO: Increase size of tileA to [BN * n + 8][ld] for better smem reuse ???
+    __shared__ T tileA[BM][ld];
+    __shared__ T tileB[BN][ld];
 
     wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, float> frag_re; // Will accumulate partial sums
     wmma::fill_fragment(frag_re, 0.f);
@@ -128,8 +129,8 @@ __global__ void __launch_bounds__((BN / WMMA_N) * WARPSIZE * (BM / WMMA_M)) fwd_
                         const float* src_ptr = &A_idx.at(global_m, t, global_k);
                         float2 data = *reinterpret_cast<const float2*>(src_ptr);
 
-                        tileA[load_m][load_k_base] = cuda_cast<ComputeType>(data.x);
-                        tileA[load_m][load_k_base + 1] = cuda_cast<ComputeType>(data.y);
+                        tileA[load_m][load_k_base] = cuda_cast<T>(data.x);
+                        tileA[load_m][load_k_base + 1] = cuda_cast<T>(data.y);
                     }
                 }
             }
@@ -151,16 +152,16 @@ __global__ void __launch_bounds__((BN / WMMA_N) * WARPSIZE * (BM / WMMA_M)) fwd_
                         const float* src_ptr = &Wa_idx.at(global_k, blockIdx.x, global_n);
                         float2 data = *reinterpret_cast<const float2*>(src_ptr);
 
-                        tileB[load_n_base][load_k] = cuda_cast<ComputeType>(data.x);
-                        tileB[load_n_base + 1][load_k] = cuda_cast<ComputeType>(data.y);
+                        tileB[load_n_base][load_k] = cuda_cast<T>(data.x);
+                        tileB[load_n_base + 1][load_k] = cuda_cast<T>(data.y);
                     }
                 }
             }
 
             __syncthreads();
 
-            wmma::fragment<wmma::matrix_a, WMMA_M, WMMA_N, WMMA_K, ComputeType, wmma::row_major> frag_a;
-            wmma::fragment<wmma::matrix_b, WMMA_M, WMMA_N, WMMA_K, ComputeType, wmma::col_major> frag_b;
+            wmma::fragment<wmma::matrix_a, WMMA_M, WMMA_N, WMMA_K, T, wmma::row_major> frag_a;
+            wmma::fragment<wmma::matrix_b, WMMA_M, WMMA_N, WMMA_K, T, wmma::col_major> frag_b;
 
 #pragma unroll
             for (int mma_k = 0; mma_k < BK; mma_k += WMMA_K) {
@@ -177,7 +178,7 @@ __global__ void __launch_bounds__((BN / WMMA_N) * WARPSIZE * (BM / WMMA_M)) fwd_
         //a single row in vector r in batches. Wa_weighted stored in frags will be applied an epilogue to create W_eff.
         //frag_Wa_weighted now stores W_eff results
         const float* pos_Wo = &Wo_idx.at(blockIdx.x, cta_n + warp_idx_x * WMMA_N);
-        calc_Weff<WMMA_M, WMMA_N, WMMA_K, ComputeType>(frag_Wa_weighted, pos_Wo, J0, J1);
+        calc_Weff<WMMA_M, WMMA_N, WMMA_K, T>(frag_Wa_weighted, pos_Wo, J0, J1);
 
         wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, float> frag_r;
 
@@ -236,7 +237,7 @@ __global__ void __launch_bounds__((BN / WMMA_N) * WARPSIZE * (BM / WMMA_M)) fwd_
     }
 }
 
-template<Activation ACT, typename ComputeType>
+template<Activation ACT, typename T>
 void fwd_n128_a23_global_launcher_impl(
     void* A,
     void* Wa,
@@ -255,7 +256,7 @@ void fwd_n128_a23_global_launcher_impl(
 ){
     constexpr int BM = 64;
     constexpr int BN = 64;
-    constexpr int BK = 32;
+    constexpr int BK = 16;
 
     constexpr int WMMA_M = 16;
     constexpr int WMMA_N = 16;
@@ -271,7 +272,7 @@ void fwd_n128_a23_global_launcher_impl(
     dim3 gridSize(N, batch_size / BM);
 
     for (int t = 0; t < seq_len; ++t){
-        fwd_update_r_kernel<ACT, BM, BN, BK, WMMA_M, WMMA_N, WMMA_K, ComputeType><<<gridSize, blockSize>>>(
+        fwd_update_r_kernel<ACT, BM, BN, BK, WMMA_M, WMMA_N, WMMA_K, T><<<gridSize, blockSize>>>(
             static_cast<const float*>(A),
             static_cast<const float*>(Wa),
             J0, J1,
@@ -282,6 +283,7 @@ void fwd_n128_a23_global_launcher_impl(
         );
     }
 }
+
 
 
 void fwd_n128_a23_global_launcher(
@@ -316,3 +318,70 @@ void fwd_n128_a23_global_launcher(
         }
     }
 }
+
+// template<Activation ACT, typename T>
+// void fwd_n128_a23_global_launcher_impl(
+//     void* A,
+//     void* Wa,
+//     float J0,
+//     float J1,
+//     void* Wo,
+//     void* r_init,
+//     void* W_delta7,
+//     void* bump_history,
+//     void* r_history,
+//     float alpha,
+//     int N,
+//     int a_dim,
+//     int seq_len,
+//     int batch_size
+// ){
+//     constexpr int BM = 64;
+//     constexpr int BN = 64;
+//     constexpr int BK = 32;
+//
+//     constexpr int WMMA_M = 16;
+//     constexpr int WMMA_N = 16;
+//     constexpr int WMMA_K = 16;
+//
+//     dim3 blockSize((BN / WMMA_N) * WARPSIZE, BM / WMMA_M);
+//     dim3 gridSize(N, batch_size / BM);
+//
+//     // Set L2 cache persistence for Wa and Wo
+//     cudaDeviceProp prop;
+//     cudaGetDeviceProperties(&prop, 0);
+//
+//     size_t Wa_size = a_dim * N * N * sizeof(float);
+//     size_t Wo_size = N * N * sizeof(float);
+//
+//     cudaDeviceSetLimit(cudaLimitPersistingL2CacheSize, prop.persistingL2CacheMaxSize);
+//
+//     cudaStreamAttrValue stream_attr;
+//     stream_attr.accessPolicyWindow.base_ptr = Wa;
+//     stream_attr.accessPolicyWindow.num_bytes = Wa_size;
+//     stream_attr.accessPolicyWindow.hitRatio = 1.0f;
+//     stream_attr.accessPolicyWindow.hitProp = cudaAccessPropertyPersisting;
+//     stream_attr.accessPolicyWindow.missProp = cudaAccessPropertyStreaming;
+//
+//     cudaStreamSetAttribute(0, cudaStreamAttributeAccessPolicyWindow, &stream_attr);
+//
+//     stream_attr.accessPolicyWindow.base_ptr = Wo;
+//     stream_attr.accessPolicyWindow.num_bytes = Wo_size;
+//
+//     cudaStreamSetAttribute(0, cudaStreamAttributeAccessPolicyWindow, &stream_attr);
+//
+//     for (int t = 0; t < seq_len; ++t){
+//         fwd_update_r_kernel<ACT, BM, BN, BK, WMMA_M, WMMA_N, WMMA_K, T><<<gridSize, blockSize>>>(
+//             static_cast<const float*>(A),
+//             static_cast<const float*>(Wa),
+//             J0, J1,
+//             static_cast<const float*>(Wo),
+//             static_cast<const float*>(r_init),
+//             static_cast<float*>(bump_history),
+//             alpha, N, a_dim, seq_len, t, batch_size
+//         );
+//     }
+//
+//     // Reset cache policy
+//     cudaCtxResetPersistingL2Cache();
+// }

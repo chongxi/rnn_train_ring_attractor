@@ -242,11 +242,8 @@ class GeneralizedRingAttractorNoGain(nn.Module):
         )
 
         # Compute r_history directly from bump_history
-        # self.bump_history = self.bump_history.view(self.batch_size, self.seq_len, self.num_neurons).contiguous()
         self.bump_history = self.bump_history.permute(1, 0, 2)
-
         r_delta7 = self.bump_history @ self.W_delta7
-        # r_delta7 = non_linear(self.bump_history, self.activation_name) @ self.W_delta7
         r_max = r_delta7.max(dim=2, keepdim=True)[0]
         self.r_history = r_delta7 / r_max     
         
@@ -320,6 +317,7 @@ def benchmark(num_neurons, seq_len, action_dim, batch_size, activation, check_fo
     r_init_impl = r_init_fp32.detach().clone()
     r_init_ref = r_init_fp32.detach().clone()
 
+    # av_signal_fp32_tr = av_signal_fp32.detach().clone().permute(1, 0, 2)
 
     predicted_cosine_wave, bump_activity = ring_rnn(av_signal_fp32, r_init=r_init_impl)
     predicted_cosine_wave_ref, bump_activity_ref = ring_rnn_ref(av_signal_fp32, r_init=r_init_ref)

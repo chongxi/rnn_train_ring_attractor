@@ -184,7 +184,7 @@ void fwd_n128_a23_global_launcher_fp32_impl(
 ){
     constexpr int BM = 32;
     constexpr int BN = 32;
-    constexpr int BK = 32;
+    constexpr int BK = 16;
 
     dim3 blockSize(256);
     dim3 gridSize(N, batch_size / BM);

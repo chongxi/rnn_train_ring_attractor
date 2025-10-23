@@ -35,6 +35,7 @@ void fwd(
 ) {
     auto sizes = A.sizes();
     int batch_size = sizes[0], seq_len = sizes[1], a_dim = sizes[2];
+    //int batch_size = sizes[1], seq_len = sizes[0], a_dim = sizes[2];
     int N = Wa.size(1);
 
     fwd_cuda(
