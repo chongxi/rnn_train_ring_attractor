@@ -26,6 +26,8 @@ def non_linear(x, activation_name):
     elif activation_name == 'gelu':
         return torch.nn.functional.gelu(x)
         # return torch.nn.functional.gelu(x, approximate='tanh')
+    elif activation_name == 'silu':
+        return torch.nn.functional.silu(x)
     else:
         raise ValueError(f"Activation function {activation_name} not supported")
 

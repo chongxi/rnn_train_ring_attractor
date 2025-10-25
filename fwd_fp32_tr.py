@@ -18,7 +18,10 @@ def non_linear(x, activation_name):
     elif activation_name == 'relu':
         return torch.relu(x)
     elif activation_name == 'gelu':
-        return torch.nn.functional.gelu(x, approximate='tanh')
+        return torch.nn.functional.gelu(x)
+        # return torch.nn.functional.gelu(x, approximate='tanh')
+    elif activation_name == 'silu':
+        return torch.nn.functional.silu(x)
     else:
         raise ValueError(f"Activation function {activation_name} not supported")
 
@@ -222,7 +225,7 @@ class GeneralizedRingAttractorNoGain(nn.Module):
 
         alpha = 0.15
         
-        activation_map = {'relu': 0, 'gelu': 1, 'tanh': 2}
+        activation_map = {'relu': 0, 'gelu': 1, 'tanh': 2, 'silu': 3}
         if self.activation_name not in activation_map:
             raise ValueError(f"Invalid activation_name '{self.activation_name}'. Must be one of {list(activation_map.keys())}.")
         activation_type = activation_map[self.activation_name]
@@ -374,12 +377,12 @@ if __name__ == "__main__":
     # --- Training Parameters ---
     
     # Base parameters
-    num_neurons = 128
-    seq_len = 50
-    action_dim = 64
-    # relu, gelu, tanh
-    activation = 'gelu'
-    batch_size = 256
+    num_neurons = 2048 + 16
+    seq_len = 10
+    action_dim = 16
+    # relu, gelu, tanh, silu
+    activation = 'silu'
+    batch_size = 128
     training_steps = 10
     learning_rate = 1e-3
 

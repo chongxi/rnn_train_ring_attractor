@@ -24,13 +24,18 @@ __global__ void __launch_bounds__(256) fwd_update_r_kernel_fp32(
     IndexWrapper<float, 3> bump_history_idx(bump_history, seq_len, batch_size, n_neur);
 
     const int tid = threadIdx.x;
-    const int thread_m = tid / 32;  // 0-7
-    const int thread_n = tid % 32;  // 0-31
+    const int thread_m = tid / 32;
+    const int thread_n = tid % 32;
+
+    const int global_m_base = blockIdx.y * BM;
+    const int global_n_neuron = blockIdx.x;
+
+    if (global_n_neuron >= n_neur) return;
 
     bool is_first = (t == 0);
 
     __shared__ float tileA[BM][BK + 2];
-    __shared__ float tileB[BN][BK + 2];  // Transposed: [BN][BK]
+    __shared__ float tileB[BN][BK + 2];
 
     float re_accum[4] = {0.f, 0.f, 0.f, 0.f};
 
@@ -38,53 +43,83 @@ __global__ void __launch_bounds__(256) fwd_update_r_kernel_fp32(
         float Wa_weighted[4] = {0.f, 0.f, 0.f, 0.f};
 
         for (int cta_k = 0; cta_k < a_dim; cta_k += BK) {
+            //===================== Step 1: Compute Wa_weighted[BM, BN] tile ===========================================
+            {   // Load tileA
+                const int total_loads_A = BM * BK / 4;
 
-            // Load A tile: vectorized load using float data[4]
-            {
-                int load_idx = tid;
-                int load_m = load_idx / (BK / 4);  // Which row
-                int load_k_base = (load_idx % (BK / 4)) * 4;  // Which column (base)
+                if (tid < total_loads_A) {
+                    int load_m = tid / (BK / 4);
+                    int load_k_base = (tid % (BK / 4)) * 4;
 
-                if (load_m < BM) {
-                    int global_m = blockIdx.y * BM + load_m;
+                    int global_m = global_m_base + load_m;
                     int global_k = cta_k + load_k_base;
 
-                    // Get pointer to global memory for vectorized load
-                    const float* src_ptr = &A_idx.at(global_m, t, global_k);
-                    float data[4];
-                    *reinterpret_cast<float4*>(data) = *reinterpret_cast<const float4*>(src_ptr);
+                    if (global_m < batch_size && global_k + 4 <= a_dim) {
+                        const float* src_ptr = &A_idx.at(global_m, t, global_k);
+                        uintptr_t addr = reinterpret_cast<uintptr_t>(src_ptr);
 
-                    for (int i = 0; i < 4; ++i) {
-                        tileA[load_m][load_k_base + i] = data[i];
+                        if (addr % 16 == 0) {
+                            float data[4];
+                            *reinterpret_cast<float4*>(data) = *reinterpret_cast<const float4*>(src_ptr);
+
+                            for (int i = 0; i < 4; ++i) {
+                                tileA[load_m][load_k_base + i] = data[i];
+                            }
+                        } else {
+                            for (int i = 0; i < 4; ++i) {
+                                tileA[load_m][load_k_base + i] = A_idx.at(global_m, t, global_k + i);
+                            }
+                        }
+                    } else {
+                        for (int i = 0; i < 4; ++i) {
+                            int gk = global_k + i;
+                            tileA[load_m][load_k_base + i] = (global_m < batch_size && gk < a_dim) ?
+                                A_idx.at(global_m, t, gk) : 0.f;
+                        }
                     }
                 }
-            }
 
-            // Load Wa tile TRANSPOSED with vectorized load using float data[4]
-            // We load 4 consecutive elements along the N dimension and transpose to tileB
-            {
-                int load_idx = tid;
-                int load_k = load_idx / (BN / 4);  // Which k index
-                int load_n_base = (load_idx % (BN / 4)) * 4;  // Which n index (base of 4)
+                // Load tileB, transposed load from global memory
+                if (tid >= total_loads_A) {
+                    int load_idx_wa = tid - total_loads_A;
+                    const int total_loads_Wa = BK * BN / 4;
 
-                if (load_k < BK && load_n_base < BN) {
-                    int global_k = cta_k + load_k;
-                    int global_n = cta_n + load_n_base;
+                    if (load_idx_wa < total_loads_Wa) {
+                        int load_k = load_idx_wa / (BN / 4);
+                        int load_n_base = (load_idx_wa % (BN / 4)) * 4;
 
-                    // Load 4 consecutive elements along N dimension
-                    const float* src_ptr = &Wa_idx.at(global_k, blockIdx.x, global_n);
-                    float data[4];
-                    *reinterpret_cast<float4*>(data) = *reinterpret_cast<const float4*>(src_ptr);
+                        int global_k = cta_k + load_k;
+                        int global_n = cta_n + load_n_base;
 
-                    for (int i = 0; i < 4; ++i) {
-                        tileB[load_n_base + i][load_k] = data[i];
+                        if (global_k < a_dim && global_n + 4 <= n_neur) {
+                            const float* src_ptr = &Wa_idx.at(global_k, global_n_neuron, global_n);
+                            uintptr_t addr = reinterpret_cast<uintptr_t>(src_ptr);
+
+                            if (addr % 16 == 0) {
+                                float data[4];
+                                *reinterpret_cast<float4*>(data) = *reinterpret_cast<const float4*>(src_ptr);
+
+                                for (int i = 0; i < 4; ++i) {
+                                    tileB[load_n_base + i][load_k] = data[i];
+                                }
+                            } else {
+                                for (int i = 0; i < 4; ++i) {
+                                    tileB[load_n_base + i][load_k] = Wa_idx.at(global_k, global_n_neuron, global_n + i);
+                                }
+                            }
+                        } else {
+                            for (int i = 0; i < 4; ++i) {
+                                int gn = global_n + i;
+                                tileB[load_n_base + i][load_k] = (global_k < a_dim && gn < n_neur) ?
+                                    Wa_idx.at(global_k, global_n_neuron, gn) : 0.f;
+                            }
+                        }
                     }
                 }
             }
 
             __syncthreads();
 
-            // Compute: each thread computes 4x1 tile (4 elements)
             int m0 = thread_m * 4;
             int m1 = thread_m * 4 + 1;
             int m2 = thread_m * 4 + 2;
@@ -112,61 +147,67 @@ __global__ void __launch_bounds__(256) fwd_update_r_kernel_fp32(
             Wa_weighted[3] += c3;
 
             __syncthreads();
-        }
+        } // end for cta_k
 
-        // Apply epilogue: W_eff = Wa_weighted + J0 + J1 * Wo
+        //============================ Step 2: Apply epilogue to get W_eff[BM, BN] =====================================
         int n = thread_n;
-        float wo = Wo_idx.at(blockIdx.x, cta_n + n);
+        int global_n = cta_n + n;
+
+        if (global_n < n_neur) {
+            float wo = Wo_idx.at(global_n_neuron, global_n);
 
 #pragma unroll
-        for (int i = 0; i < 4; ++i) {
-            Wa_weighted[i] += J0 + J1 * wo;
-        }
-
-        // Load r and accumulate
-        float r[4];
-#pragma unroll
-        for (int i = 0; i < 4; ++i) {
-            int m = thread_m * 4 + i;
-            int global_m = blockIdx.y * BM + m;
-
-            if (is_first) {
-                r[i] = r_init_idx.at(global_m, cta_n + n);
-            } else {
-                r[i] = bump_history_idx.at(t - 1, global_m, cta_n + n);
+            for (int i = 0; i < 4; ++i) {
+                Wa_weighted[i] += J0 + J1 * wo;
             }
 
-            re_accum[i] += Wa_weighted[i] * r[i];
-        }
-    }
+        //============================= Step 3: Load r[BM, BN] tile and perform partial sum ============================
+#pragma unroll
+            for (int i = 0; i < 4; ++i) {
+                int m = thread_m * 4 + i;
+                int global_m = global_m_base + m;
 
-    // Reduce across N dimension using cooperative groups
+                if (global_m < batch_size) {
+                    float r_val;
+                    if (is_first) {
+                        r_val = r_init_idx.at(global_m, global_n);
+                    } else {
+                        r_val = bump_history_idx.at(t - 1, global_m, global_n);
+                    }
+
+                    re_accum[i] += Wa_weighted[i] * r_val;
+                }
+            }
+        }
+    } // end for cta_n
+
+    //====================== Step 4: Reduce across BN dimension, update r and save to bump_history =====================
     auto block = cg::this_thread_block();
     auto tile = cg::tiled_partition<32>(block);
 
-    // Each row needs to be reduced independently
+#pragma unroll
     for (int row_offset = 0; row_offset < 4; ++row_offset) {
         int m = thread_m * 4 + row_offset;
-        int global_m = blockIdx.y * BM + m;
+        int global_m = global_m_base + m;
 
-        // Sum across the warp (32 threads, each holding one n-column)
-        float row_sum = re_accum[row_offset];
-        row_sum = cg::reduce(tile, row_sum, cg::plus<float>());
+        if (global_m < batch_size) {
+            float row_sum = re_accum[row_offset];
+            row_sum = cg::reduce(tile, row_sum, cg::plus<float>());
 
-        // Only the first thread in each warp writes the result
-        if (thread_n == 0) {
-            float r_prev = is_first ?
-                r_init_idx.at(global_m, blockIdx.x) :
-                bump_history_idx.at(t - 1, global_m, blockIdx.x);
+            if (thread_n == 0) {
+                float r_prev = is_first ?
+                    r_init_idx.at(global_m, global_n_neuron) :
+                    bump_history_idx.at(t - 1, global_m, global_n_neuron);
 
-            float r_updated = (1 - alpha) * r_prev + alpha * activation<ACT>(row_sum);
-            bump_history_idx.at(t, global_m, blockIdx.x) = r_updated;
+                float r_updated = (1 - alpha) * r_prev + alpha * activation<ACT>(row_sum);
+                bump_history_idx.at(t, global_m, global_n_neuron) = r_updated;
+            }
         }
     }
 }
 
 template<Activation ACT>
-void fwd_n128_a23_global_launcher_fp32_impl(
+void fwd_fp32_impl(
     void* A,
     void* Wa,
     float J0,
@@ -187,7 +228,7 @@ void fwd_n128_a23_global_launcher_fp32_impl(
     constexpr int BK = 16;
 
     dim3 blockSize(256);
-    dim3 gridSize(N, batch_size / BM);
+    dim3 gridSize(N, (batch_size + BM - 1) / BM);
 
     for (int t = 0; t < seq_len; ++t){
         fwd_update_r_kernel_fp32<ACT, BM, BN, BK><<<gridSize, blockSize>>>(
@@ -220,8 +261,9 @@ void fwd_n128_a23_global_launcher(
     int activation_type
 ){
     switch(activation_type){
-        case 0: fwd_n128_a23_global_launcher_fp32_impl<Activation::RELU>(A, Wa, J0, J1, Wo, r_init, W_delta7, bump_history, r_history, alpha, N, a_dim, seq_len, batch_size); break;
-        case 1: fwd_n128_a23_global_launcher_fp32_impl<Activation::GELU>(A, Wa, J0, J1, Wo, r_init, W_delta7, bump_history, r_history, alpha, N, a_dim, seq_len, batch_size); break;
-        case 2: fwd_n128_a23_global_launcher_fp32_impl<Activation::TANH>(A, Wa, J0, J1, Wo, r_init, W_delta7, bump_history, r_history, alpha, N, a_dim, seq_len, batch_size); break;
+        case 0: fwd_fp32_impl<Activation::RELU>(A, Wa, J0, J1, Wo, r_init, W_delta7, bump_history, r_history, alpha, N, a_dim, seq_len, batch_size); break;
+        case 1: fwd_fp32_impl<Activation::GELU>(A, Wa, J0, J1, Wo, r_init, W_delta7, bump_history, r_history, alpha, N, a_dim, seq_len, batch_size); break;
+        case 2: fwd_fp32_impl<Activation::TANH>(A, Wa, J0, J1, Wo, r_init, W_delta7, bump_history, r_history, alpha, N, a_dim, seq_len, batch_size); break;
+        case 3: fwd_fp32_impl<Activation::SILU>(A, Wa, J0, J1, Wo, r_init, W_delta7, bump_history, r_history, alpha, N, a_dim, seq_len, batch_size); break;
     }
 }

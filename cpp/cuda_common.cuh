@@ -18,7 +18,22 @@
 namespace cg = cooperative_groups;
 using namespace nvcuda;
 
-enum class Activation { RELU, GELU, TANH };
+template <typename To, typename From>
+__device__ __forceinline__ To cuda_cast(From x);
+
+// float → half
+template <>
+__device__ __forceinline__ __half cuda_cast<__half, float>(float x) {
+    return __float2half(x);
+}
+
+// float → bfloat16
+template <>
+__device__ __forceinline__ __nv_bfloat16 cuda_cast<__nv_bfloat16, float>(float x) {
+    return __float2bfloat16(x);
+}
+
+enum class Activation { RELU, GELU, TANH, SILU };
 
 template<Activation ACT>
 __device__ __forceinline__ float activation(float x) {
@@ -29,6 +44,8 @@ __device__ __forceinline__ float activation(float x) {
         // return 0.5f * x * (1.0f + erff(x * M_SQRT1_2));
         // grad: float pdf = __expf(-0.5f * x * x) * M_1_SQRT2PI; return normcdf(x) + x * pdf;
         return x * normcdff(x);
+    } else if constexpr (ACT == Activation::SILU) {
+        return x / (1.f + __expf(-x));
     } else { // TANH
         return tanhf(x);
     }
