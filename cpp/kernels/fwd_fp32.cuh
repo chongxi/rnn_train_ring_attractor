@@ -1,8 +1,8 @@
-#include "cuda_common.cuh"
+// #include "cuda_common.cuh"
 #include "../cuda_common.cuh"
 
 template<Activation ACT, int BM, int BN, int BK>
-__global__ void __launch_bounds__(256) fwd_update_r_kernel_fp32(
+__global__ void __launch_bounds__(256) fwd_fp32_kernel(
     const float* A,
     const float* Wa,
     float J0,
@@ -214,9 +214,9 @@ void fwd_fp32_impl(
     float J1,
     void* Wo,
     void* r_init,
-    void* W_delta7,
+    // void* W_delta7,
     void* bump_history,
-    void* r_history,
+    // void* r_history,
     float alpha,
     int N,
     int a_dim,
@@ -231,7 +231,7 @@ void fwd_fp32_impl(
     dim3 gridSize(N, (batch_size + BM - 1) / BM);
 
     for (int t = 0; t < seq_len; ++t){
-        fwd_update_r_kernel_fp32<ACT, BM, BN, BK><<<gridSize, blockSize>>>(
+        fwd_fp32_kernel<ACT, BM, BN, BK><<<gridSize, blockSize>>>(
             static_cast<const float*>(A),
             static_cast<const float*>(Wa),
             J0, J1,
@@ -243,16 +243,16 @@ void fwd_fp32_impl(
     }
 }
 
-void fwd_n128_a23_global_launcher(
+void fwd_fp32_launcher(
     void* A,
     void* Wa,
     float J0,
     float J1,
     void* Wo,
     void* r_init,
-    void* W_delta7,
+    // void* W_delta7,
     void* bump_history,
-    void* r_history,
+    // void* r_history,
     float alpha,
     int N,
     int a_dim,
@@ -261,9 +261,9 @@ void fwd_n128_a23_global_launcher(
     int activation_type
 ){
     switch(activation_type){
-        case 0: fwd_fp32_impl<Activation::RELU>(A, Wa, J0, J1, Wo, r_init, W_delta7, bump_history, r_history, alpha, N, a_dim, seq_len, batch_size); break;
-        case 1: fwd_fp32_impl<Activation::GELU>(A, Wa, J0, J1, Wo, r_init, W_delta7, bump_history, r_history, alpha, N, a_dim, seq_len, batch_size); break;
-        case 2: fwd_fp32_impl<Activation::TANH>(A, Wa, J0, J1, Wo, r_init, W_delta7, bump_history, r_history, alpha, N, a_dim, seq_len, batch_size); break;
-        case 3: fwd_fp32_impl<Activation::SILU>(A, Wa, J0, J1, Wo, r_init, W_delta7, bump_history, r_history, alpha, N, a_dim, seq_len, batch_size); break;
+        case 0: fwd_fp32_impl<Activation::RELU>(A, Wa, J0, J1, Wo, r_init, bump_history, alpha, N, a_dim, seq_len, batch_size); break;
+        case 1: fwd_fp32_impl<Activation::GELU>(A, Wa, J0, J1, Wo, r_init, bump_history, alpha, N, a_dim, seq_len, batch_size); break;
+        case 2: fwd_fp32_impl<Activation::TANH>(A, Wa, J0, J1, Wo, r_init, bump_history, alpha, N, a_dim, seq_len, batch_size); break;
+        case 3: fwd_fp32_impl<Activation::SILU>(A, Wa, J0, J1, Wo, r_init, bump_history, alpha, N, a_dim, seq_len, batch_size); break;
     }
 }

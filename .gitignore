@@ -1,7 +1,7 @@
 cpp/build
 cpp/profile
 cpp/profile.*
-cpp/kernels/CMakeLists.txt
+cpp/CMakeLists.txt
 cpp/cmake-build-debug
 cpp/cmake-build-release
 build

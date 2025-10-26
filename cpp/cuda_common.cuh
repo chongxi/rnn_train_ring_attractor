@@ -11,7 +11,7 @@
 // #include "math.h"
 
 #include <iostream>
-#include <vector>
+// #include <vector>
 
 #define WARPSIZE 32
 

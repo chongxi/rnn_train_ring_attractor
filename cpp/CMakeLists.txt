@@ -1,3 +1,4 @@
+# This file is only for intellisense purpose, it's not used for compilation
 cmake_minimum_required(VERSION 3.18)
 project(CustomKernel CUDA CXX)
 set(CMAKE_CUDA_STANDARD 17)

@@ -18,7 +18,10 @@ def non_linear(x, activation_name):
     elif activation_name == 'relu':
         return torch.relu(x)
     elif activation_name == 'gelu':
-        return torch.nn.functional.gelu(x, approximate='tanh')
+        return torch.nn.functional.gelu(x)
+        # return torch.nn.functional.gelu(x, approximate='tanh')
+    elif activation_name == 'silu':
+        return torch.nn.functional.silu(x)
     else:
         raise ValueError(f"Activation function {activation_name} not supported")
 
@@ -123,6 +126,7 @@ class GeneralizedRingAttractorNoGain(nn.Module):
         self.num_neurons = num_neurons
         self.action_dim = action_dim
         self.batch_size = batch_size
+        self.seq_len = seq_len
         self.tau = tau
         self.dt = dt
         self.activation_name = activation
@@ -150,14 +154,15 @@ class GeneralizedRingAttractorNoGain(nn.Module):
             torch.randn(action_dim, num_neurons, num_neurons, 
                        dtype=torch.float32) / num_neurons ** 0.5)
 
-        # Pre-allocate intermediate tensors
-        self.r_history = torch.empty(batch_size, seq_len, num_neurons, device='cuda', dtype=torch.float32)
-        self.r_history.fill_(0)
+        # # Pre-allocate intermediate tensors
+        # self.r_history = torch.empty(batch_size, seq_len, num_neurons, device='cuda', dtype=torch.float32)
+        # self.r_history.fill_(0)
 
-        self.bump_history = torch.empty(batch_size, seq_len, num_neurons, device='cuda', dtype=torch.float32)
-        self.bump_history.fill_(0)     
+        # # self.bump_history = torch.empty(batch_size, seq_len, num_neurons, device='cuda', dtype=torch.float32)
+        # self.bump_history = torch.empty(seq_len, batch_size, num_neurons, device='cuda', dtype=torch.float32)
+        # self.bump_history.fill_(0)     
         
-        torch.cuda.synchronize()   
+        # torch.cuda.synchronize()   
 
     def forward(self, action_signal, r_init=None, ref=True):
         """Process entire sequence of ring attractor dynamics.
@@ -189,29 +194,14 @@ class GeneralizedRingAttractorNoGain(nn.Module):
 
         Final output: 
         - r_history: torch.Size([64, 128, 256])
-        - bump_history: torch.Size([64, 128, 256])
-
-        /////////////////// Batch size = 1
-
-        Unchanged in for-loop:
-        - action_signal: torch.Size([1, 128, 32])  # input sequence
-        - J0: torch.Size([256, 256])                # baseline connectivity
-        - J1: scalar = 0.1                          # scaling factor
-        - Wo: torch.Size([256, 256])                # recurrent weight
-        - Wa: torch.Size([32, 256, 256])            # action-modulated weight bank
-        - W_delta7: torch.Size([256, 256])          # output projection
-        - activation_name: str                      # nonlinearity to use
-
-        Changed in for-loop:
-        - r: torch.Size([1, 256])                  # neural state (updated each step)
-        - Wa_weighted: torch.Size([1, 256, 256])   # effective weighted action matrix
-        - recurrent_input: torch.Size([1, 256])    # input from recurrent dynamics
-        - r_delta7: torch.Size([1, 256])           # normalized output
-
-        Final output: 
-        - r_history: torch.Size([1, 128, 256])
-        - bump_history: torch.Size([1, 128, 256])
+        - bump_history: torch.Size([128, 64, 256])
         """
+        batch_size = action_signal.shape[0]
+        # Pre-allocate intermediate tensors 
+        r_history = torch.zeros(batch_size, self.seq_len, self.num_neurons, device='cuda', dtype=torch.float32)
+         # transposed for better performance
+        bump_history = torch.zeros(self.seq_len, batch_size, self.num_neurons, device='cuda', dtype=torch.float32)
+
         if r_init is None:
             initial_angle = torch.full((self.batch_size,), torch.pi, device=self.device)
             r = create_initial_bump(initial_angle, self.num_neurons, device=self.device)
@@ -220,7 +210,7 @@ class GeneralizedRingAttractorNoGain(nn.Module):
 
         alpha = 0.15
         
-        activation_map = {'relu': 0, 'gelu': 1, 'tanh': 2}
+        activation_map = {'relu': 0, 'gelu': 1, 'tanh': 2, 'silu': 3}
         if self.activation_name not in activation_map:
             raise ValueError(f"Invalid activation_name '{self.activation_name}'. Must be one of {list(activation_map.keys())}.")
         activation_type = activation_map[self.activation_name]
@@ -232,20 +222,20 @@ class GeneralizedRingAttractorNoGain(nn.Module):
             J1=self.J1,
             Wo=self.Wo,        
             r_init=r,
-            W_delta7=self.W_delta7,  
-            bump_history=self.bump_history,
-            r_history=self.r_history,
+            # W_delta7=self.W_delta7,  
+            bump_history=bump_history,
+            # r_history=self.r_history,
             alpha=alpha,
             activation_type=activation_type
         )
 
         # Compute r_history directly from bump_history
-        r_delta7 = self.bump_history @ self.W_delta7
-        # r_delta7 = non_linear(self.bump_history, self.activation_name) @ self.W_delta7
+        bump_history = bump_history.permute(1, 0, 2)
+        r_delta7 = bump_history @ self.W_delta7
         r_max = r_delta7.max(dim=2, keepdim=True)[0]
-        self.r_history = r_delta7 / r_max     
+        r_history = r_delta7 / r_max     
         
-        return self.r_history.clone(), self.bump_history.clone()
+        return r_history.clone(), bump_history.clone()
     
 def benchmark(num_neurons, seq_len, action_dim, batch_size, activation, check_forward, check_backward, measure_latency):
     assert torch.cuda.is_available(), "CUDA GPU not detected. Exiting."
@@ -323,10 +313,9 @@ def benchmark(num_neurons, seq_len, action_dim, batch_size, activation, check_fo
 
         print("--------------- Check correctness Forward ----------------------")
 
-        check_tensor_match(tsr_impl=bump_activity, tsr_ref=bump_activity_ref, name="bump_history", rtol=1e-7, atol=1e-5)
+        check_tensor_match(tsr_impl=bump_activity, tsr_ref=bump_activity_ref, name="bump_history", rtol=1e-7, atol=1e-5, max_print=2)
 
-        check_tensor_match(predicted_cosine_wave, predicted_cosine_wave_ref, "r_history", rtol=1e-4, atol=1e-5)
-        # check_tensor_match(predicted_cosine_wave, predicted_cosine_wave_ref, "r_history")
+        check_tensor_match(predicted_cosine_wave, predicted_cosine_wave_ref, "r_history", rtol=1e-4, atol=1e-5, max_print=2)
 
         # print("---------------------------------------------------------------------")
 
@@ -371,12 +360,12 @@ if __name__ == "__main__":
     # --- Training Parameters ---
     
     # Base parameters
-    num_neurons = 256
-    seq_len = 128
-    action_dim = 32
-    # relu, gelu, tanh
-    activation = 'gelu'
-    batch_size = 128
+    num_neurons = 1024
+    seq_len = 20
+    action_dim = 16
+    # relu, gelu, tanh, silu
+    activation = 'relu'
+    batch_size = 256
     training_steps = 10
     learning_rate = 1e-3
 
@@ -395,48 +384,22 @@ if __name__ == "__main__":
     # seq_len_list = [4, 8, 16, 32, 128, 256, 512, 1024, 2048]
     # # seq_len_list = [4, 8, 16, 32, 128, 256]
     # batch_size_list = [32, 128, 256, 512, 1024, 2048]
-    # action_dim_list = [2, 3, 4, 8, 32, 128, 256, 512, 1024]
-    # num_neurons_list = [128, 128*2, 128*3, 128*4, 128*5, 128*6, 128*7, 128*8]
+    # action_dim_list = [2, 3, 6, 12]
+    # num_neurons_list = [128, 128*2, 128*3, 128*4, 128*8, 128*16]
 
     # check_correctness = True
 
     # for num_neurons in num_neurons_list:
     #     print(f"batch_size: {batch_size} num_neurons: {num_neurons}, action dim: {action_dim}, seq_len {seq_len}: ")
-    #     benchmark(num_neurons=num_neurons, seq_len=seq_len, action_dim=action_dim, batch_size=batch_size, activation=activation, check=check_correctness) 
-    
-    # num_neurons = 256
-    # seq_len = 20
-    # action_dim = 3
-    # activation = 'relu'
-    # batch_size = 256
-
-    # for seq_len in seq_len_list:
-    #     print(f"batch_size: {batch_size} num_neurons: {num_neurons}, action dim: {action_dim}, seq_len {seq_len}: ")
-    #     benchmark(num_neurons=num_neurons, seq_len=seq_len, action_dim=action_dim, batch_size=batch_size, activation=activation, check=check_correctness) 
-
-    # num_neurons = 256
-    # seq_len = 20
-    # action_dim = 3
-    # activation = 'relu'
-    # batch_size = 256
+    #     benchmark(num_neurons=num_neurons, seq_len=seq_len, action_dim=action_dim, batch_size=batch_size, activation=activation, check_forward=check_correctness_forward, check_backward=check_correctness_backward, measure_latency=measure_latency)
 
     # for batch_size in batch_size_list:
     #     print(f"batch_size: {batch_size} num_neurons: {num_neurons}, action dim: {action_dim}, seq_len {seq_len}: ")
     #     benchmark(num_neurons=num_neurons, seq_len=seq_len, action_dim=action_dim, batch_size=batch_size, activation=activation, check=check_correctness)
 
-    # num_neurons = 256
-    # seq_len = 20
-    # action_dim = 3
-    # activation = 'relu'
-    # batch_size = 256
-
     # for action_dim in action_dim_list:
     #     print(f"batch_size: {batch_size} num_neurons: {num_neurons}, action dim: {action_dim}, seq_len {seq_len}: ")
-    #     benchmark(num_neurons=num_neurons, seq_len=seq_len, action_dim=action_dim, batch_size=batch_size, activation=activation, check=check_correctness)                
+    #     benchmark(num_neurons=num_neurons, seq_len=seq_len, action_dim=action_dim, batch_size=batch_size, activation=activation, check_forward=check_correctness_forward, check_backward=check_correctness_backward, measure_latency=measure_latency)       
 
-
-    # check_correctness = False
-    # print(f"batch_size: {batch_size} num_neurons: {num_neurons}, action dim: {action_dim}, seq_len {seq_len}: ")
-    # benchmark(num_neurons=num_neurons, seq_len=seq_len, action_dim=action_dim, batch_size=batch_size, activation=activation, check=check_correctness) 
 
 

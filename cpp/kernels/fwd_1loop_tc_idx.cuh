@@ -1,4 +1,4 @@
-#include "cuda_common.cuh"
+// #include "cuda_common.cuh"
 #include "../cuda_common.cuh"
 
 
@@ -47,7 +47,7 @@ __device__ void calc_Weff(wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA
 }
 
 template<Activation ACT, int BM, int BN, int BK, int WMMA_M, int WMMA_N, int WMMA_K, typename T>
-__global__ void __launch_bounds__((BN / WMMA_N) * WARPSIZE * (BM / WMMA_M)) fwd_update_r_kernel(
+__global__ void __launch_bounds__((BN / WMMA_N) * WARPSIZE * (BM / WMMA_M)) fwd_wmma_kernel(
     const float* A,  //[batch_size, seq_len, a_dim]) = [256, 10, 64] TODO: Transposing for better L2 cache hit
     const float* Wa, //[a_dim, n_neur, n_neur] = [64, 128, 128]
     float J0,
@@ -243,16 +243,16 @@ __global__ void __launch_bounds__((BN / WMMA_N) * WARPSIZE * (BM / WMMA_M)) fwd_
 }
 
 template<Activation ACT, typename T>
-void fwd_n128_a23_global_launcher_impl(
+void fwd_wmma_impl(
     void* A,
     void* Wa,
     float J0,
     float J1,
     void* Wo,
     void* r_init,
-    void* W_delta7,
+    // void* W_delta7,
     void* bump_history,
-    void* r_history,
+    // void* r_history,
     float alpha,
     int N,
     int a_dim,
@@ -276,7 +276,7 @@ void fwd_n128_a23_global_launcher_impl(
     dim3 gridSize(N, (batch_size + BM - 1) / BM);
 
     for (int t = 0; t < seq_len; ++t){
-        fwd_update_r_kernel<ACT, BM, BN, BK, WMMA_M, WMMA_N, WMMA_K, T><<<gridSize, blockSize>>>(
+        fwd_wmma_kernel<ACT, BM, BN, BK, WMMA_M, WMMA_N, WMMA_K, T><<<gridSize, blockSize>>>(
             static_cast<const float*>(A),
             static_cast<const float*>(Wa),
             J0, J1,
@@ -288,16 +288,16 @@ void fwd_n128_a23_global_launcher_impl(
     }
 }
 
-void fwd_n128_a23_global_launcher(
+void fwd_wmma_launcher(
     void* A,
     void* Wa,
     float J0,
     float J1,
     void* Wo,
     void* r_init,
-    void* W_delta7,
+    // void* W_delta7,
     void* bump_history,
-    void* r_history,
+    // void* r_history,
     float alpha,
     int N,
     int a_dim,
@@ -308,17 +308,17 @@ void fwd_n128_a23_global_launcher(
     constexpr bool use_bf16 = false;
     if (use_bf16) {
         switch(activation_type){
-            case 0: fwd_n128_a23_global_launcher_impl<Activation::RELU, nv_bfloat16>(A, Wa, J0, J1, Wo, r_init, W_delta7, bump_history, r_history, alpha, N, a_dim, seq_len, batch_size); break;
-            case 1: fwd_n128_a23_global_launcher_impl<Activation::GELU, nv_bfloat16>(A, Wa, J0, J1, Wo, r_init, W_delta7, bump_history, r_history, alpha, N, a_dim, seq_len, batch_size); break;
-            case 2: fwd_n128_a23_global_launcher_impl<Activation::TANH, nv_bfloat16>(A, Wa, J0, J1, Wo, r_init, W_delta7, bump_history, r_history, alpha, N, a_dim, seq_len, batch_size); break;
-            case 3: fwd_n128_a23_global_launcher_impl<Activation::SILU, nv_bfloat16>(A, Wa, J0, J1, Wo, r_init, W_delta7, bump_history, r_history, alpha, N, a_dim, seq_len, batch_size); break;
+            case 0: fwd_wmma_impl<Activation::RELU, nv_bfloat16>(A, Wa, J0, J1, Wo, r_init, bump_history, alpha, N, a_dim, seq_len, batch_size); break;
+            case 1: fwd_wmma_impl<Activation::GELU, nv_bfloat16>(A, Wa, J0, J1, Wo, r_init, bump_history, alpha, N, a_dim, seq_len, batch_size); break;
+            case 2: fwd_wmma_impl<Activation::TANH, nv_bfloat16>(A, Wa, J0, J1, Wo, r_init, bump_history, alpha, N, a_dim, seq_len, batch_size); break;
+            case 3: fwd_wmma_impl<Activation::SILU, nv_bfloat16>(A, Wa, J0, J1, Wo, r_init, bump_history, alpha, N, a_dim, seq_len, batch_size); break;
         }
     } else {
         switch(activation_type){
-            case 0: fwd_n128_a23_global_launcher_impl<Activation::RELU, half>(A, Wa, J0, J1, Wo, r_init, W_delta7, bump_history, r_history, alpha, N, a_dim, seq_len, batch_size); break;
-            case 1: fwd_n128_a23_global_launcher_impl<Activation::GELU, half>(A, Wa, J0, J1, Wo, r_init, W_delta7, bump_history, r_history, alpha, N, a_dim, seq_len, batch_size); break;
-            case 2: fwd_n128_a23_global_launcher_impl<Activation::TANH, half>(A, Wa, J0, J1, Wo, r_init, W_delta7, bump_history, r_history, alpha, N, a_dim, seq_len, batch_size); break;
-            case 3: fwd_n128_a23_global_launcher_impl<Activation::SILU, half>(A, Wa, J0, J1, Wo, r_init, W_delta7, bump_history, r_history, alpha, N, a_dim, seq_len, batch_size); break;
+            case 0: fwd_wmma_impl<Activation::RELU, half>(A, Wa, J0, J1, Wo, r_init, bump_history, alpha, N, a_dim, seq_len, batch_size); break;
+            case 1: fwd_wmma_impl<Activation::GELU, half>(A, Wa, J0, J1, Wo, r_init, bump_history, alpha, N, a_dim, seq_len, batch_size); break;
+            case 2: fwd_wmma_impl<Activation::TANH, half>(A, Wa, J0, J1, Wo, r_init, bump_history, alpha, N, a_dim, seq_len, batch_size); break;
+            case 3: fwd_wmma_impl<Activation::SILU, half>(A, Wa, J0, J1, Wo, r_init, bump_history, alpha, N, a_dim, seq_len, batch_size); break;
         }
     }
 }

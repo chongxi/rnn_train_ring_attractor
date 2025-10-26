@@ -4,6 +4,10 @@ from torch.utils.cpp_extension import load
 import pathlib
 import os
 
+print()
+print("WARNING: If dimensions (batch_size, a_dim, num_neurons) must be divisible by 16 to activate tensor core kernel, otherwise it will fall back to non tensor core version.")
+print()
+
 print("========================================================") 
 
 """
@@ -64,10 +68,10 @@ fwd_cuda = load(
     verbose=True,
     build_directory=build_dir,
     extra_cuda_cflags=[
-        "-lineinfo",          # useful for profiling
-        "-Xptxas=-v",         # print register/shared memory usage
-        # "--ptxas-options=-v", # alternative syntax
-        "-keep",               # keep intermediate files (including .ptx and .cubin)
+        # "-lineinfo",          # useful for profiling
+        # "-Xptxas=-v",         # print register/shared memory usage
+        # # "--ptxas-options=-v", # alternative syntax
+        # "-keep",               # keep intermediate files (including .ptx and .cubin)
         "-arch=sm_120"
     ]
 )

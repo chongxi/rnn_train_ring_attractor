@@ -151,5 +151,5 @@ python fwd_fp32.py
 ```
 
 2. Benchmark results
-Ref is Pytorch version, Impl is CUDA implementation, check REPORT.md
+Ref is Pytorch version, Impl is CUDA implementation, check assets/REPORT.md
 
