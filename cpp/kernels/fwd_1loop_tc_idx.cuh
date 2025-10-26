@@ -259,6 +259,8 @@ void fwd_wmma_impl(
     int seq_len,
     int batch_size
 ){
+    // TODO: Double the number of tensor cores used, maybe use frag_acc[2] for 512 or 256 threads
+    // Use 2 frag acc blocks and only 1 frag acc master
     constexpr int BM = 64;
     constexpr int BN = 64;
     constexpr int BK = 16;

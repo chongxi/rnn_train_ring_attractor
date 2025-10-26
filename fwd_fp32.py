@@ -198,9 +198,9 @@ class GeneralizedRingAttractorNoGain(nn.Module):
         """
         batch_size = action_signal.shape[0]
         # Pre-allocate intermediate tensors 
-        r_history = torch.zeros(batch_size, self.seq_len, self.num_neurons, device='cuda', dtype=torch.float32)
+        r_history = torch.empty(batch_size, self.seq_len, self.num_neurons, device='cuda', dtype=torch.float32)
          # transposed for better performance
-        bump_history = torch.zeros(self.seq_len, batch_size, self.num_neurons, device='cuda', dtype=torch.float32)
+        bump_history = torch.empty(self.seq_len, batch_size, self.num_neurons, device='cuda', dtype=torch.float32)
 
         if r_init is None:
             initial_angle = torch.full((self.batch_size,), torch.pi, device=self.device)
