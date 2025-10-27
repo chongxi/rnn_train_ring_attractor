@@ -24,22 +24,24 @@ def check_tensor_match(tsr_impl, tsr_ref, name, rtol=1e-5, atol=1e-8, max_print=
         percentage = (num_mismatched / total_elements) * 100
         all_indices = torch.nonzero(mismatch)
         first_indices = all_indices[:max_print]
-        last_indices = all_indices[-max_print:] if len(all_indices) > max_print else torch.empty(0, 3, dtype=torch.long)
-        
+        last_indices = all_indices[-max_print:] if len(all_indices) > max_print else torch.empty(0, all_indices.shape[1], dtype=torch.long)
+
         print("Mismatch at                 ref         impl        diff        rdiff")
         print("---------------------------------------------------------------------")
         print("First mismatches:")
         for idx in first_indices:
-            b, t, n = idx
-            print(f"[batch={b:2d},t={t:3d},n={n:3d}]: {tsr_ref[b,t,n]:10.6f} {tsr_impl[b,t,n]:10.6f} {diff[b,t,n]:10.6f} {rdiff[b,t,n]:10.6f}")
-        
+            idx_str = ','.join([f"{i}" for i in idx.tolist()])
+            idx_tuple = tuple(idx.tolist())
+            print(f"[{idx_str}]: {tsr_ref[idx_tuple]:10.6f} {tsr_impl[idx_tuple]:10.6f} {diff[idx_tuple]:10.6f} {rdiff[idx_tuple]:10.6f}")
+
         if len(all_indices) > max_print:
             print("...")
             print("Last mismatches:")
             for idx in last_indices:
-                b, t, n = idx
-                print(f"[batch={b:2d},t={t:3d},n={n:3d}]: {tsr_ref[b,t,n]:10.6f} {tsr_impl[b,t,n]:10.6f} {diff[b,t,n]:10.6f} {rdiff[b,t,n]:10.6f}")
-        
+                idx_str = ','.join([f"{i}" for i in idx.tolist()])
+                idx_tuple = tuple(idx.tolist())
+                print(f"[{idx_str}]: {tsr_ref[idx_tuple]:10.6f} {tsr_impl[idx_tuple]:10.6f} {diff[idx_tuple]:10.6f} {rdiff[idx_tuple]:10.6f}")
+
         print(f"Total mismatched elements: {num_mismatched} out of {total_elements} ({percentage:.1f}%)")
         print(f"diff: {diff.mean():.6f} ± {diff.std():.6f}")
         print(f"rdiff: {rdiff.mean():.6f} ± {rdiff.std():.6f}")
