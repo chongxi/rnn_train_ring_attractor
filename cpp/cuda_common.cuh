@@ -6,16 +6,15 @@
 #include <mma.h>
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
+#include <cute/tensor.hpp>
 
 // #define _USE_MATH_DEFINES
 // #include "math.h"
 
-#include <iostream>
-// #include <vector>
-
 #define WARPSIZE 32
 
 namespace cg = cooperative_groups;
+using namespace cute;
 using namespace nvcuda;
 
 template <typename To, typename From>

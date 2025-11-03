@@ -195,6 +195,7 @@ class GeneralizedRingAttractorNoGain(nn.Module):
         alpha = 0.15
 
         bump_history = ring_rnn_cuda_func(
+        # bump_history = fwd_cuda.fwd(
             action_signal=action_signal,
             Wa=self.Wa,
             J0=self.J0,
@@ -325,19 +326,19 @@ if __name__ == "__main__":
     # --- Training Parameters ---
     
     # Base parameters
-    num_neurons = 512
+    num_neurons = 1024
     seq_len = 20
     action_dim = 16
     # relu, gelu, tanh, silu
-    activation = 'silu'
+    activation = 'relu'
     batch_size = 256
     training_steps = 10
     learning_rate = 1e-3
 
     print("BASE PARAMETERS: ")
-    check_correctness_forward = False
-    check_correctness_backward = True
-    measure_latency = True
+    check_correctness_forward = True
+    check_correctness_backward = False
+    measure_latency = False
 
     print(f"batch_size: {batch_size} num_neurons: {num_neurons}, action dim: {action_dim}, seq_len {seq_len}, activation: {activation}:")
     benchmark(num_neurons=num_neurons, seq_len=seq_len, action_dim=action_dim, batch_size=batch_size, activation=activation,

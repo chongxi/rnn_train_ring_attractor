@@ -48,8 +48,8 @@ __device__ void calc_Weff(wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA
 
 template<Activation ACT, int BM, int BN, int BK, int WMMA_M, int WMMA_N, int WMMA_K, typename T>
 __global__ void __launch_bounds__((BN / WMMA_N) * WARPSIZE * (BM / WMMA_M)) fwd_wmma_kernel(
-    const float* A,  //[batch_size, seq_len, a_dim]) = [256, 10, 64] TODO: Transposing for better L2 cache hit
-    const float* Wa, //[a_dim, n_neur, n_neur] = [64, 128, 128]
+    const T* A_t,    //[batch_size, a_dim]
+    const T* Wa_16b, //[a_dim, n_neur, n_neur] = [64, 128, 128]
     float J0,
     float J1,
     const float* Wo, //[n_neur, n_neur] = [128, 128] TODO: Make Wo persistent in L2 cache. REVIEW: already fits inside L2
@@ -62,17 +62,13 @@ __global__ void __launch_bounds__((BN / WMMA_N) * WARPSIZE * (BM / WMMA_M)) fwd_
     int t,
     int batch_size
 ){
-    IndexWrapper<const float, 3> A_idx(A, batch_size, seq_len, a_dim);
-    IndexWrapper<const float, 3> Wa_idx(Wa, a_dim, n_neur, n_neur);
-    IndexWrapper<const float, 2> Wo_idx(Wo, n_neur, n_neur);
-    IndexWrapper<const float, 2> r_init_idx(r_init, batch_size, n_neur);
-    IndexWrapper<float, 3> bump_history_idx(bump_history, seq_len, batch_size, n_neur);
+    Tensor gA_t = make_tensor(A_t, make_layout(make_shape(batch_size, a_dim), LayoutRight{}));
+    Tensor gWa = make_tensor(Wa_16b, make_layout(make_shape(a_dim, n_neur, n_neur), LayoutRight{}));
+    Tensor gWo = make_tensor(Wo, make_layout(make_shape(n_neur, n_neur), LayoutRight{}));
+    Tensor gR_innit = make_tensor(r_init, make_layout(make_shape(batch_size, n_neur), LayoutRight{}));
+    Tensor gBump_hist = make_tensor(bump_history, make_layout(make_shape(seq_len, batch_size, n_neur), LayoutRight{}));
 
-    // constexpr int group_size = 16;
     auto cta = cg::this_thread_block();
-    // auto group = cg::tiled_partition<group_size>(cta);
-    // size_t gr_x = group.thread_rank(); // 0 -> 15
-    // size_t gr_y = group.meta_group_rank(); // 0 -> 31
 
     const size_t warp_idx_x = threadIdx.x / WARPSIZE;
     const size_t warp_idx_y = threadIdx.y;
@@ -88,9 +84,14 @@ __global__ void __launch_bounds__((BN / WMMA_N) * WARPSIZE * (BM / WMMA_M)) fwd_
     constexpr int lda = ld;
     constexpr int ldb = ld;
 
-    // TODO: Increase size of tileA to [BN * n + 8][ld] for better smem reuse ???
     __shared__ T tileA[BM][ld];
     __shared__ T tileB[BN][ld];
+
+    auto sA = make_tensor(make_smem_ptr(tileA),
+        make_layout(make_shape(Int<BM>{}, Int<BK>{}), make_stride(Int<ld>{}, Int<1>{})));
+
+    auto sB = make_tensor(make_smem_ptr(tileB),
+        make_layout(make_shape(Int<BK>{}, Int<BN>{}), make_stride(Int<1>{}, Int<ld>{})));
 
     wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, float> frag_re;
     wmma::fill_fragment(frag_re, 0.f);
@@ -116,11 +117,11 @@ __global__ void __launch_bounds__((BN / WMMA_N) * WARPSIZE * (BM / WMMA_M)) fwd_
                     int global_k = cta_k + load_k_base;
 
                     if (global_m < batch_size && global_k + 1 < a_dim) {
-                        const float* src_ptr = &A_idx.at(global_m, t, global_k);
-                        float2 data = *reinterpret_cast<const float2*>(src_ptr);
+                        const T* src_ptr = &gA_t(global_m, global_k);
+                        uint32_t data = *reinterpret_cast<const uint32_t*>(src_ptr);
 
-                        tileA[load_m][load_k_base] = cuda_cast<T>(data.x);
-                        tileA[load_m][load_k_base + 1] = cuda_cast<T>(data.y);
+                        tileA[load_m][load_k_base] = reinterpret_cast<const T*>(&data)[0];
+                        tileA[load_m][load_k_base + 1] = reinterpret_cast<const T*>(&data)[1];
                     } else {
                         tileA[load_m][load_k_base] = cuda_cast<T>(0.f);
                         tileA[load_m][load_k_base + 1] = cuda_cast<T>(0.f);
@@ -128,7 +129,7 @@ __global__ void __launch_bounds__((BN / WMMA_N) * WARPSIZE * (BM / WMMA_M)) fwd_
                 }
             }
 
-            {   // Transpose load into tileB, for faster WMMA frag b load, lds.128
+            {
                 const int total_threads = blockDim.x * blockDim.y;
                 const int thread_id = threadIdx.y * blockDim.x + threadIdx.x;
                 const int num_loads = (BK * BN) / 2;
@@ -141,11 +142,11 @@ __global__ void __launch_bounds__((BN / WMMA_N) * WARPSIZE * (BM / WMMA_M)) fwd_
                     int global_n = cta_n + load_n_base;
 
                     if (global_k < a_dim && global_n + 1 < n_neur) {
-                        const float* src_ptr = &Wa_idx.at(global_k, global_n_neuron, global_n);
-                        float2 data = *reinterpret_cast<const float2*>(src_ptr);
+                        const T* src_ptr = &gWa(global_k, global_n_neuron, global_n);
+                        uint32_t data = *reinterpret_cast<const uint32_t*>(src_ptr);
 
-                        tileB[load_n_base][load_k] = cuda_cast<T>(data.x);
-                        tileB[load_n_base + 1][load_k] = cuda_cast<T>(data.y);
+                        tileB[load_n_base][load_k] = reinterpret_cast<const T*>(&data)[0];
+                        tileB[load_n_base + 1][load_k] = reinterpret_cast<const T*>(&data)[1];
                     } else {
                         tileB[load_n_base][load_k] = cuda_cast<T>(0.f);
                         tileB[load_n_base + 1][load_k] = cuda_cast<T>(0.f);
@@ -169,12 +170,9 @@ __global__ void __launch_bounds__((BN / WMMA_N) * WARPSIZE * (BM / WMMA_M)) fwd_
         } // end for cta_k
 
         //============================ Step 2: Apply epilogue to get W_eff[BM, BN] =====================================
-        //The result of BMxBN matrix mulitplication is Wa_weighted stored in frags, They have the result of
-        //a single row in vector r in batches. Wa_weighted stored in frags will be applied an epilogue to create W_eff.
-        //frag_Wa_weighted now stores W_eff results
         int frag_n = cta_n + warp_idx_x * WMMA_N;
         if (frag_n < n_neur) {
-            const float* pos_Wo = &Wo_idx.at(global_n_neuron, frag_n);
+            const float* pos_Wo = &gWo(global_n_neuron, frag_n);
             calc_Weff<WMMA_M, WMMA_N, WMMA_K, T>(frag_Wa_weighted, pos_Wo, J0, J1);
         }
 
@@ -184,8 +182,8 @@ __global__ void __launch_bounds__((BN / WMMA_N) * WARPSIZE * (BM / WMMA_M)) fwd_
         int frag_m = global_m_base + warp_idx_y * WMMA_M;
         if (frag_m < batch_size && frag_n < n_neur) {
             const float* pos_frag_r = is_first ?
-                &r_init_idx.at(frag_m, frag_n) :
-                &bump_history_idx.at(t - 1, frag_m, frag_n);
+                &gR_innit(frag_m, frag_n) :
+                &gBump_hist(t - 1, frag_m, frag_n);
 
             wmma::load_matrix_sync(frag_r, pos_frag_r, n_neur, wmma::mem_row_major);
 
@@ -196,7 +194,6 @@ __global__ void __launch_bounds__((BN / WMMA_N) * WARPSIZE * (BM / WMMA_M)) fwd_
     } // end for cta_n
 
     //========= Step 4: Reduce (full sum) frag_re across BN dimension to get a single column of re in batches ==========
-    // TODO: Reduce the size of re_temp, it's using too much smem. REVIEW: current impl is already optimized
     constexpr int ldtemp = BN + 2;
     __shared__ float re_temp[BM][ldtemp];
 
@@ -234,11 +231,70 @@ __global__ void __launch_bounds__((BN / WMMA_N) * WARPSIZE * (BM / WMMA_M)) fwd_
         int global_m = global_m_base + cta.thread_rank();
         if (global_m < batch_size && global_n_neuron < n_neur) {
             float r_prev = is_first ?
-                r_init_idx.at(global_m, global_n_neuron) :
-                bump_history_idx.at(t - 1, global_m, global_n_neuron);
+                gR_innit(global_m, global_n_neuron) :
+                gBump_hist(t - 1, global_m, global_n_neuron);
             float r_updated = (1 - alpha) * r_prev + alpha * activation<ACT>(re_temp[cta.thread_rank()][0]);
-            bump_history_idx.at(t, global_m, global_n_neuron) = r_updated;
+            gBump_hist(t, global_m, global_n_neuron) = r_updated;
         }
+    }
+}
+
+// Kernel to convert a slice of A at time t from float to half/bfloat16
+template<typename T>
+__global__ void cast_b32_b16_A_t(
+    const float* A,          // [batch_size, seq_len, a_dim]
+    T* A_t,                  // [batch_size, a_dim]
+    int batch_size,
+    int a_dim,
+    int seq_len,
+    int t
+) {
+    int total_elements = batch_size * a_dim;
+    size_t tid = blockIdx.x * blockDim.x + threadIdx.x;
+    size_t stride = gridDim.x * blockDim.x;
+
+    // Process 4 floats (becomes 4 halfs/bfloat16s) per iteration
+    for (size_t idx = tid * 4; idx < total_elements; idx += stride * 4) {
+        size_t batch_idx = idx / a_dim;
+        size_t a_idx = idx % a_dim;
+
+        // Load 4 floats from global memory
+        const float* src_ptr = &A[batch_idx * (seq_len * a_dim) + t * a_dim + a_idx];
+        float4 data = *reinterpret_cast<const float4*>(src_ptr);
+
+        // Convert each element individually
+        T* dst_ptr = &A_t[batch_idx * a_dim + a_idx];
+        dst_ptr[0] = cuda_cast<T>(data.x);
+        dst_ptr[1] = cuda_cast<T>(data.y);
+        dst_ptr[2] = cuda_cast<T>(data.z);
+        dst_ptr[3] = cuda_cast<T>(data.w);
+    }
+}
+
+// Kernel to convert Wa from float to half/bfloat16
+template<typename T>
+__global__ void cast_b32_b16_Wa(
+    const float* Wa_32b,     // [a_dim, N, N]
+    T* Wa_16b,               // [a_dim, N, N]
+    int a_dim,
+    int N
+) {
+    int total_elements = a_dim * N * N;
+    size_t tid = blockIdx.x * blockDim.x + threadIdx.x;
+    size_t stride = gridDim.x * blockDim.x;
+
+    // Process 4 floats (becomes 4 halfs/bfloat16s) per iteration
+    for (size_t idx = tid * 4; idx < total_elements; idx += stride * 4) {
+        // Load 4 floats from global memory
+        const float* src_ptr = &Wa_32b[idx];
+        float4 data = *reinterpret_cast<const float4*>(src_ptr);
+
+        // Convert each element individually
+        T* dst_ptr = &Wa_16b[idx];
+        dst_ptr[0] = cuda_cast<T>(data.x);
+        dst_ptr[1] = cuda_cast<T>(data.y);
+        dst_ptr[2] = cuda_cast<T>(data.z);
+        dst_ptr[3] = cuda_cast<T>(data.w);
     }
 }
 
@@ -250,17 +306,13 @@ void fwd_wmma_impl(
     float J1,
     void* Wo,
     void* r_init,
-    // void* W_delta7,
     void* bump_history,
-    // void* r_history,
     float alpha,
     int N,
     int a_dim,
     int seq_len,
     int batch_size
 ){
-    // TODO: Double the number of tensor cores used, maybe use frag_acc[2] for 512 or 256 threads
-    // Use 2 frag acc blocks and only 1 frag acc master
     constexpr int BM = 64;
     constexpr int BN = 64;
     constexpr int BK = 16;
@@ -269,25 +321,69 @@ void fwd_wmma_impl(
     constexpr int WMMA_N = 16;
     constexpr int WMMA_K = 16;
 
-    // constexpr int BLOCKSIZE = (BM / WMMA_M) * (BN / WMMA_N) * WARPSIZE;
-
     dim3 blockSize((BN / WMMA_N) * WARPSIZE, BM / WMMA_M);
-
-    // TODO: Make blockDix.x = N / SPLIT, meaning each block calculates SPLIT rows in r, we can reuse batches of r in the for loop
-    // Currently, each block will calculate just a single row in the resulted r in batches.
     dim3 gridSize(N, (batch_size + BM - 1) / BM);
 
-    for (int t = 0; t < seq_len; ++t){
-        fwd_wmma_kernel<ACT, BM, BN, BK, WMMA_M, WMMA_N, WMMA_K, T><<<gridSize, blockSize>>>(
-            static_cast<const float*>(A),
+    // Allocate 16-bit buffers
+    T* Wa_16b;
+    T* A_t;
+
+    size_t Wa_size = a_dim * N * N * sizeof(T);
+    size_t A_t_size = batch_size * a_dim * sizeof(T);
+
+    cudaMalloc(&Wa_16b, Wa_size);
+    cudaMalloc(&A_t, A_t_size);
+
+    // Convert Wa once (outside the time loop)
+    {
+        int total_elements = a_dim * N * N;
+        int threads = 256;
+        int blocks = (total_elements + (threads * 4) - 1) / (threads * 4);
+
+        cast_b32_b16_Wa<T><<<blocks, threads>>>(
             static_cast<const float*>(Wa),
+            Wa_16b,
+            a_dim,
+            N
+        );
+        cudaDeviceSynchronize();
+    }
+
+    // Time loop
+    for (int t = 0; t < seq_len; ++t) {
+        // Convert A slice for time t
+        {
+            int total_elements = batch_size * a_dim;
+            int threads = 256;
+            int blocks = (total_elements + (threads * 4) - 1) / (threads * 4);
+
+            cast_b32_b16_A_t<T><<<blocks, threads>>>(
+                static_cast<const float*>(A),
+                A_t,
+                batch_size,
+                a_dim,
+                seq_len,
+                t
+            );
+            cudaDeviceSynchronize();
+        }
+
+        // Launch main kernel with 16-bit inputs
+        fwd_wmma_kernel<ACT, BM, BN, BK, WMMA_M, WMMA_N, WMMA_K, T><<<gridSize, blockSize>>>(
+            A_t,
+            Wa_16b,
             J0, J1,
             static_cast<const float*>(Wo),
             static_cast<const float*>(r_init),
             static_cast<float*>(bump_history),
             alpha, N, a_dim, seq_len, t, batch_size
         );
+        cudaDeviceSynchronize();
     }
+
+    // Free allocated memory
+    cudaFree(Wa_16b);
+    cudaFree(A_t);
 }
 
 void fwd_wmma_launcher(

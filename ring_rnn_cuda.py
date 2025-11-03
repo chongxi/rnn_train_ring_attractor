@@ -1,6 +1,7 @@
 import torch
 from torch.autograd import Function
 from rnn_cuda import fwd_cuda
+
 def ring_rnn_cuda_func(
         action_signal,
         Wa,
@@ -77,7 +78,7 @@ class RingRnnCudaFunc(Function):
             activation_type,
         )
 
-        ctx.save_for_backward(action_signal, Wa, Wo, bump_history)
+        ctx.save_for_backward(action_signal, Wa, Wo, r_init)
         ctx.J0 = J0
         ctx.J1 = J1
         ctx.alpha = alpha
@@ -87,7 +88,7 @@ class RingRnnCudaFunc(Function):
 
     @staticmethod
     def backward(ctx, grad_bump_history):
-        action_signal, Wa, Wo, bump_history = ctx.saved_tensors
+        action_signal, Wa, Wo, r_init = ctx.saved_tensors
         J0 = ctx.J0
         J1 = ctx.J1
         alpha = ctx.alpha
@@ -100,7 +101,7 @@ class RingRnnCudaFunc(Function):
             J0,
             J1,
             Wo,
-            bump_history,
+            r_init,
             alpha,
             activation_type,
         )
@@ -139,55 +140,72 @@ def _ring_rnn_backward(
         J0,
         J1,
         Wo,
-        bump_history,
+        r_init,
         alpha,
         activation_type,
 ):
-    """Pure PyTorch backward pass."""
+    """Pure PyTorch backward pass - fully recompute forward pass."""
     seq_len, batch_size, num_neurons = grad_bump_history.shape
     action_dim = Wa.shape[0]
 
+    # Recompute entire forward pass
+    bump_history_recomputed = torch.zeros(seq_len, batch_size, num_neurons, device=action_signal.device)
+    r = r_init.clone()
+
+    for t in range(seq_len):
+        A_t = action_signal[:, t, :]
+
+        Wa_flat = Wa.view(action_dim, num_neurons * num_neurons)
+        Wa_weighted = torch.matmul(A_t, Wa_flat).view(batch_size, num_neurons, num_neurons)
+        W_eff = J0 + J1 * Wo + Wa_weighted
+        recurrent_input_pre_act = (W_eff @ r.unsqueeze(2)).squeeze(2)
+
+        # Apply activation
+        if activation_type == 0:  # relu
+            recurrent_input = torch.relu(recurrent_input_pre_act)
+        elif activation_type == 1:  # gelu
+            recurrent_input = torch.nn.functional.gelu(recurrent_input_pre_act)
+        elif activation_type == 2:  # tanh
+            recurrent_input = torch.tanh(recurrent_input_pre_act)
+        elif activation_type == 3:  # silu
+            recurrent_input = torch.nn.functional.silu(recurrent_input_pre_act)
+
+        r = r * (1 - alpha) + recurrent_input * alpha
+        bump_history_recomputed[t] = r
+
+    # Now do backward pass
     grad_action = torch.zeros_like(action_signal)
     grad_Wa = torch.zeros_like(Wa)
     grad_Wo = torch.zeros_like(Wo)
     grad_r = torch.zeros(batch_size, num_neurons, device=action_signal.device)
 
-    # Backward through time
     for t in reversed(range(seq_len)):
         grad_r = grad_r + grad_bump_history[t]
 
-        r_t = bump_history[t]
         A_t = action_signal[:, t, :]
 
-        # Get previous state
         if t > 0:
-            r_prev = bump_history[t-1]
+            r_prev = bump_history_recomputed[t-1]
         else:
-            r_prev = action_signal.new_zeros(batch_size, num_neurons)
+            r_prev = r_init
 
-        # Backprop: r_t = r_prev * (1 - alpha) + recurrent_input * alpha
-        grad_recurrent_input = grad_r * alpha
-        grad_r_prev = grad_r * (1 - alpha)
-
-        # Compute W_eff and recurrent_input_pre_act
         Wa_flat = Wa.view(action_dim, num_neurons * num_neurons)
         Wa_weighted = torch.matmul(A_t, Wa_flat).view(batch_size, num_neurons, num_neurons)
         W_eff = J0 + J1 * Wo + Wa_weighted
         recurrent_input_pre_act = (W_eff @ r_prev.unsqueeze(2)).squeeze(2)
 
-        # Backprop through activation
+        grad_recurrent_input = grad_r * alpha
+        grad_r_prev = grad_r * (1 - alpha)
+
         grad_recurrent_pre_act = grad_recurrent_input * activation_derivative(
             recurrent_input_pre_act, activation_type
         )
 
-        # Backprop through W_eff @ r_prev
         grad_W_eff = torch.bmm(grad_recurrent_pre_act.unsqueeze(2), r_prev.unsqueeze(1))
         grad_r_prev = grad_r_prev + torch.bmm(W_eff.transpose(1, 2), grad_recurrent_pre_act.unsqueeze(2)).squeeze(2)
 
-        # Backprop through W_eff = J0 + J1 * Wo + Wa_weighted
         grad_Wo = grad_Wo + (grad_W_eff * J1).sum(dim=0)
 
-        # Backprop through Wa_weighted
         grad_A_t = torch.matmul(grad_W_eff.view(batch_size, -1), Wa_flat.T)
         grad_action[:, t, :] = grad_A_t
 
@@ -201,19 +219,23 @@ def _ring_rnn_backward(
 
 def activation_derivative(x, activation_type):
     """Compute activation derivative."""
+    import math
+
     if activation_type == 0:  # relu
         return (x > 0).float()
     elif activation_type == 1:  # gelu
-        # Derivative: Φ(x) + x * φ(x) where Φ is CDF, φ is PDF
-        from torch.distributions import Normal
-        import math
-        std_normal = Normal(0, 1)
-        cdf = std_normal.cdf(x)
-        pdf = torch.exp(-0.5 * x * x) / math.sqrt(2 * math.pi)
+        # GELU(x) = x * Φ(x)
+        # Derivative: Φ(x) + x * φ(x)
+        # where Φ(x) = CDF, φ(x) = PDF of standard normal
+        cdf = 0.5 * (1.0 + torch.erf(x / math.sqrt(2.0)))
+        pdf = torch.exp(-0.5 * x * x) / math.sqrt(2.0 * math.pi)
         return cdf + x * pdf
     elif activation_type == 2:  # tanh
         return 1 - torch.tanh(x) ** 2
     elif activation_type == 3:  # silu
+        # SiLU(x) = x * sigmoid(x)
+        # Derivative: sigmoid(x) + x * sigmoid(x) * (1 - sigmoid(x))
+        #           = sigmoid(x) * (1 + x * (1 - sigmoid(x)))
         sigmoid = torch.sigmoid(x)
         return sigmoid * (1 + x * (1 - sigmoid))
     else:
