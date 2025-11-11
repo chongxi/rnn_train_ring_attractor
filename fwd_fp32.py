@@ -338,7 +338,7 @@ if __name__ == "__main__":
     print("BASE PARAMETERS: ")
     check_correctness_forward = True
     check_correctness_backward = False
-    measure_latency = False
+    measure_latency = True
 
     print(f"batch_size: {batch_size} num_neurons: {num_neurons}, action dim: {action_dim}, seq_len {seq_len}, activation: {activation}:")
     benchmark(num_neurons=num_neurons, seq_len=seq_len, action_dim=action_dim, batch_size=batch_size, activation=activation,
