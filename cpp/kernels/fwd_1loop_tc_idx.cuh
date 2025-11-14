@@ -54,7 +54,7 @@ __global__ void __launch_bounds__((BN / WMMA_N) * WARPSIZE * (BM / WMMA_M)) fwd_
     float J1,
     const float* Wo, //[n_neur, n_neur] = [128, 128] TODO: Make Wo persistent in L2 cache. REVIEW: already fits inside L2
     const float* r_init, // [batch_size, n_neur] = [256, 128]
-    float* bump_history, // [batch_size, seq_len, n_neur] -> [seq_len, batch_size, n_neur] = [10, 256, 128]
+    float* bump_history, // [batch_size, seq_len + 1, n_neur] -> [seq_len + 1, batch_size, n_neur] = [10, 256, 128]
     float alpha,
     int n_neur,
     int a_dim,
@@ -81,8 +81,6 @@ __global__ void __launch_bounds__((BN / WMMA_N) * WARPSIZE * (BM / WMMA_M)) fwd_
     const int global_n_neuron = blockIdx.x;
 
     if (global_m_base >= batch_size || global_n_neuron >= n_neur) return;
-
-    bool is_first = (t == 0);
 
     constexpr int ld = BK + 8;
     constexpr int lda = ld;
@@ -183,12 +181,8 @@ __global__ void __launch_bounds__((BN / WMMA_N) * WARPSIZE * (BM / WMMA_M)) fwd_
         //============================= Step 3: Load r[BM, BN] tile and perform partial sum ============================
         int frag_m = global_m_base + warp_idx_y * WMMA_M;
         if (frag_m < batch_size && frag_n < n_neur) {
-            const float* pos_frag_r = is_first ?
-                &r_init_idx.at(frag_m, frag_n) :
-                &bump_history_idx.at(t - 1, frag_m, frag_n);
-
+            const float* pos_frag_r = &bump_history_idx.at(t - 1, frag_m, frag_n);
             wmma::load_matrix_sync(frag_r, pos_frag_r, n_neur, wmma::mem_row_major);
-
             for (size_t i = 0; i < frag_r.num_elements; ++i) {
                 frag_re.x[i] += frag_Wa_weighted.x[i] * frag_r.x[i];
             }
@@ -233,9 +227,7 @@ __global__ void __launch_bounds__((BN / WMMA_N) * WARPSIZE * (BM / WMMA_M)) fwd_
     if (cta.thread_rank() < BM) {
         int global_m = global_m_base + cta.thread_rank();
         if (global_m < batch_size && global_n_neuron < n_neur) {
-            float r_prev = is_first ?
-                r_init_idx.at(global_m, global_n_neuron) :
-                bump_history_idx.at(t - 1, global_m, global_n_neuron);
+            float r_prev = bump_history_idx.at(t - 1, global_m, global_n_neuron);
             float r_updated = (1 - alpha) * r_prev + alpha * activation<ACT>(re_temp[cta.thread_rank()][0]);
             bump_history_idx.at(t, global_m, global_n_neuron) = r_updated;
         }
@@ -277,7 +269,7 @@ void fwd_wmma_impl(
     // Currently, each block will calculate just a single row in the resulted r in batches.
     dim3 gridSize(N, (batch_size + BM - 1) / BM);
 
-    for (int t = 0; t < seq_len; ++t){
+    for (int t = 1; t < seq_len + 1; ++t){
         fwd_wmma_kernel<ACT, BM, BN, BK, WMMA_M, WMMA_N, WMMA_K, T><<<gridSize, blockSize>>>(
             static_cast<const float*>(A),
             static_cast<const float*>(Wa),

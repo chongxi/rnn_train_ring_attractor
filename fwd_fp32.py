@@ -327,16 +327,16 @@ if __name__ == "__main__":
     # Base parameters
     num_neurons = 512
     seq_len = 20
-    action_dim = 16
+    action_dim = 32
     # relu, gelu, tanh, silu
-    activation = 'silu'
+    activation = 'relu'
     batch_size = 256
     training_steps = 10
     learning_rate = 1e-3
 
     print("BASE PARAMETERS: ")
-    check_correctness_forward = False
-    check_correctness_backward = True
+    check_correctness_forward = True
+    check_correctness_backward = False
     measure_latency = True
 
     print(f"batch_size: {batch_size} num_neurons: {num_neurons}, action dim: {action_dim}, seq_len {seq_len}, activation: {activation}:")

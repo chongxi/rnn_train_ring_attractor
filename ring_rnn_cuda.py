@@ -60,10 +60,12 @@ class RingRnnCudaFunc(Function):
         num_neurons = Wa.shape[1]
 
         bump_history = torch.empty(
-            seq_len, batch_size, num_neurons,
+            seq_len + 1, batch_size, num_neurons,
             device=action_signal.device,
             dtype=torch.float32
         )
+
+        bump_history[0, :, :] = r_init
 
         _ring_rnn_forward(
             action_signal,
@@ -77,14 +79,12 @@ class RingRnnCudaFunc(Function):
             activation_type,
         )
 
-        ctx.save_for_backward(action_signal, Wa, Wo, bump_history)
-        ctx.J0 = J0
+        ctx.save_for_backward(action_signal, Wa, J0, Wo, bump_history)
         ctx.J1 = J1
         ctx.alpha = alpha
-        ctx.activation_type = activation_type
+        ctx.activation_name = activation_type
 
-        return bump_history
-
+        return bump_history[1:, :, :]
     @staticmethod
     def backward(ctx, grad_bump_history):
         action_signal, Wa, Wo, bump_history = ctx.saved_tensors

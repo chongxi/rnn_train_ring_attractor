@@ -40,16 +40,35 @@ __device__ __forceinline__ float activation(float x) {
     if constexpr (ACT == Activation::RELU) {
         return fmaxf(x, 0.f);
     } else if constexpr (ACT == Activation::GELU) {
-        // return 0.5f * x * (1.f + tanhf(0.797885f * (x + 0.044715f * x * x * x)));
-        // return 0.5f * x * (1.0f + erff(x * M_SQRT1_2));
-        // grad: float pdf = __expf(-0.5f * x * x) * M_1_SQRT2PI; return normcdf(x) + x * pdf;
         return x * normcdff(x);
     } else if constexpr (ACT == Activation::SILU) {
-        return x / (1.f + __expf(-x));
+        float exp_arg = fminf(fmaxf(-x, -88.f), 88.f);
+        return x / (1.f + __expf(exp_arg));
     } else { // TANH
         return tanhf(x);
     }
 }
+
+template<Activation ACT>
+__device__ __forceinline__ float activation_derivative(float x) {
+    if constexpr (ACT == Activation::RELU) {
+        return x > 0.f ? 1.f : 0.f;
+    } else if constexpr (ACT == Activation::GELU) {
+        // d/dx[x * Φ(x)] = Φ(x) + x * φ(x)
+        float exp_arg = fminf(fmaxf(-0.5f * x * x, -88.f), 88.f);
+        float phi = __expf(exp_arg) * 0.56418958354775628694807945156077f;
+        return normcdff(x) + x * phi;
+    } else if constexpr (ACT == Activation::SILU) {
+        float exp_arg = fminf(fmaxf(-x, -88.f), 88.f);
+        float sigmoid_x = 1.f / (1.f + __expf(exp_arg));
+        return sigmoid_x * (1.f + x * (1.f - sigmoid_x));
+    } else { // TANH
+        float tanh_x = tanhf(x);
+        return 1.f - tanh_x * tanh_x;
+    }
+}
+
+
 
 template <typename T, uint32_t num_dim>
 struct IndexWrapper
