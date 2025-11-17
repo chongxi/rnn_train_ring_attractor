@@ -65,8 +65,8 @@ __global__ void __launch_bounds__((BN / WMMA_N) * WARPSIZE * (BM / WMMA_M)) fwd_
     IndexWrapper<const float, 3> A_idx(A, batch_size, seq_len, a_dim);
     IndexWrapper<const float, 3> Wa_idx(Wa, a_dim, n_neur, n_neur);
     IndexWrapper<const float, 2> Wo_idx(Wo, n_neur, n_neur);
-    IndexWrapper<const float, 2> r_init_idx(r_init, batch_size, n_neur);
-    IndexWrapper<float, 3> bump_history_idx(bump_history, seq_len, batch_size, n_neur);
+    // IndexWrapper<const float, 2> r_init_idx(r_init, batch_size, n_neur);
+    IndexWrapper<float, 3> bump_history_idx(bump_history, seq_len + 1, batch_size, n_neur);
 
     // constexpr int group_size = 16;
     auto cta = cg::this_thread_block();

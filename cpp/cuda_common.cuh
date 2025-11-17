@@ -6,17 +6,38 @@
 #include <mma.h>
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
+#include <cublas_v2.h>
+
+#include <thrust/host_vector.h>
+#include <thrust/device_vector.h>
+#include <iostream>
+#include <cstdlib>
+#include <cstring>
+#include <string>
+#include <cmath>
+#include <vector>
+
 
 // #define _USE_MATH_DEFINES
 // #include "math.h"
 
-#include <iostream>
 // #include <vector>
 
 #define WARPSIZE 32
 
 namespace cg = cooperative_groups;
 using namespace nvcuda;
+
+#define CHECK_CUDA_ERROR(val) check((val), #val, __FILE__, __LINE__)
+void check(cudaError_t err, char const* func, char const* file, int line)
+{
+    if (err != cudaSuccess)
+    {
+        std::cerr << "CUDA Runtime Error at: " << file << ":" << line << std::endl;
+        std::cerr << cudaGetErrorString(err) << " " << func << std::endl;
+        std::exit(EXIT_FAILURE);
+    }
+}
 
 template <typename To, typename From>
 __device__ __forceinline__ To cuda_cast(From x);
@@ -121,3 +142,4 @@ struct IndexWrapper
     uint32_t dimensions[num_dim];
     T* m_ptr;
 };
+

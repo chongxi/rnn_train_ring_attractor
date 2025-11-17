@@ -2,17 +2,6 @@
 #include "kernels/fwd_1loop_tc_idx.cuh"
 #include  "kernels/fwd_fp32.cuh"
 
-#define CHECK_CUDA_ERROR(val) check((val), #val, __FILE__, __LINE__)
-void check(cudaError_t err, char const* func, char const* file, int line)
-{
-    if (err != cudaSuccess)
-    {
-        std::cerr << "CUDA Runtime Error at: " << file << ":" << line << std::endl;
-        std::cerr << cudaGetErrorString(err) << " " << func << std::endl;
-        std::exit(EXIT_FAILURE);
-    }
-}
-
 void fwd_cuda(
     void* A,
     void* Wa,

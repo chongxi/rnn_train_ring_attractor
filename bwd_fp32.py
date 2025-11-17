@@ -81,10 +81,10 @@ class CalcBumpFunction(Function):
         # Initialize gradients
         grad_Wa = torch.zeros_like(Wa)
         grad_Wo = torch.zeros_like(Wo)
-        grad_r = torch.zeros(batch_size, N, device=grad_output.device, dtype=grad_output.dtype)
 
-        # bump_history_full = bump_history_full.permute(1, 0, 2).contiguous()
-        #
+
+        bump_history_full = bump_history_full.permute(1, 0, 2).contiguous()
+        grad_output = grad_output.permute(1, 0, 2).contiguous()
         activation_map = {'relu': 0, 'gelu': 1, 'tanh': 2, 'silu': 3}
         if activation_name not in activation_map:
             raise ValueError(f"Invalid activation '{activation_name}'. Must be one of {list(activation_map.keys())}.")
@@ -106,6 +106,7 @@ class CalcBumpFunction(Function):
 
 
         # # Backward pass through time
+        # grad_r = torch.zeros(batch_size, N, device=grad_output.device, dtype=grad_output.dtype)
         # for t in reversed(range(seq_len)):
         #     # ==================== Kernel 1: Recompute W_eff and re ====================
         #     # CUDA inputs:
@@ -145,14 +146,8 @@ class CalcBumpFunction(Function):
         #     #   grad_r:      [batch_size, N]
         #     #   recurrent_input: [batch_size, N]
         #
-        #     grad_r = grad_r + grad_output[:, t, :]  # [batch_size, N]
-        #     grad_recurrent_activated = grad_r * alpha  # [batch_size, N]
-        #
-        #     grad_recurrent_input = non_linear_derivative(
-        #         recurrent_input,
-        #         grad_recurrent_activated,
-        #         activation_name
-        #     )  # [batch_size, N] (this is "grad_re")
+        #     activation_derivative = non_linear_derivative(recurrent_input, activation_name)  # [batch_size, N]
+        #     grad_recurrent_input = activation_derivative * (grad_r + grad_output[:, t, :]) * alpha  # [batch_size, N]
         #
         #     # ==================== Kernel 3: Compute grad_r ====================
         #     # CUDA inputs:
@@ -232,49 +227,33 @@ def non_linear(x, activation_name):
         raise ValueError(f"Unknown activation: {activation_name}")
 
 
-def non_linear_derivative(x, grad_output, activation_name):
+def non_linear_derivative(x, activation_name):
     """
-    Compute gradient through activation function.
+    Compute derivative of activation function.
 
     Args:
         x: pre-activation input
-        grad_output: gradient from upstream
         activation_name: name of activation function
 
     Returns:
-        gradient w.r.t. x
+        derivative w.r.t. x
     """
     if activation_name == 'tanh':
-        # d/dx tanh(x) = 1 - tanh(x)^2
-        return grad_output * (1 - torch.tanh(x) ** 2)
+        return 1 - torch.tanh(x) ** 2
     elif activation_name == 'relu':
-        # d/dx relu(x) = 1 if x > 0 else 0
-        return grad_output * (x > 0).float()
+        return (x > 0).float()
     elif activation_name == 'sigmoid':
-        # d/dx sigmoid(x) = sigmoid(x) * (1 - sigmoid(x))
         sig = torch.sigmoid(x)
-        return grad_output * sig * (1 - sig)
+        return sig * (1 - sig)
     elif activation_name == 'silu':
-        # SiLU(x) = x * sigmoid(x)
-        # d/dx SiLU(x) = sigmoid(x) + x * sigmoid(x) * (1 - sigmoid(x))
-        #              = sigmoid(x) * (1 + x * (1 - sigmoid(x)))
         sig = torch.sigmoid(x)
-        return grad_output * sig * (1 + x * (1 - sig))
+        return sig * (1 + x * (1 - sig))
     elif activation_name == 'gelu':
-        # GELU(x) = x * Φ(x) where Φ is the standard normal CDF
-        # d/dx GELU(x) = Φ(x) + x * φ(x)
-        # where φ(x) = (1/√(2π)) * exp(-x²/2) is the standard normal PDF
-
-        # Compute standard normal CDF: Φ(x)
-        phi_x = 0.5 * (1 + torch.erf(x / torch.sqrt(2)))
-
-        # Compute standard normal PDF: φ(x) = (1/√(2π)) * exp(-x²/2)
+        phi_x = 0.5 * (1 + torch.erf(x / torch.sqrt(torch.tensor(2.0))))
         pdf_x = torch.exp(-0.5 * x ** 2) / torch.sqrt(2 * torch.pi)
-
-        # Derivative: Φ(x) + x * φ(x)
-        return grad_output * (phi_x + x * pdf_x)
+        return phi_x + x * pdf_x
     elif activation_name == 'linear' or activation_name is None:
-        return grad_output
+        return torch.ones_like(x)
     else:
         raise ValueError(f"Unknown activation: {activation_name}")
 
@@ -366,7 +345,7 @@ if __name__ == "__main__":
 
     num_neur = 128
     a_dim = 128
-    act = "silu"
+    act = "relu"
     bs = 64
     seq_len = 2
     alpha = 0.15

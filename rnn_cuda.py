@@ -87,5 +87,8 @@ bwd_cuda = load(
         # # "--ptxas-options=-v", # alternative syntax
         # "-keep",               # keep intermediate files (including .ptx and .cubin)
         "-arch=sm_120"
+    ],
+    extra_ldflags=[
+        "-lcublas"
     ]
 )
