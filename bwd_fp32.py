@@ -134,6 +134,7 @@ class CalcBumpFunction(Function):
         #
         #     recurrent_input = (W_eff @ r_prev.unsqueeze(2)).squeeze(2)  # [batch_size, N] (this is "re")
         #
+        #
         #     # ==================== Kernel 2: Compute grad_re ====================
         #     # CUDA inputs:
         #     #   grad_output: [seq_len, batch_size, N]
@@ -296,6 +297,7 @@ def input_prep(num_neurons, batch_size, a_dim, seq_len, device='cpu'):
 
     return action_signal, r_init, bump_history
 
+
 def calc_bump_ref(action_signal, Wa, J0, J1, Wo, r_init, alpha, activation_name):
     """Original calc_bump for reference."""
     batch_size, seq_len, a_dim = action_signal.shape
@@ -343,11 +345,11 @@ if __name__ == "__main__":
 
     # print(f"torch.autograd.gradcheck passed: {test}")
 
-    num_neur = 128
-    a_dim = 128
-    act = "relu"
+    num_neur = 512
+    a_dim = 32
+    act = "silu"
     bs = 64
-    seq_len = 2
+    seq_len = 4
     alpha = 0.15
     device = "cuda"
 

@@ -3,6 +3,7 @@ import torch.nn as nn
 from torch.utils.cpp_extension import load
 import pathlib
 import os
+import sys
 
 print()
 print("WARNING: If dimensions (batch_size, a_dim, num_neurons) must be divisible by 16 to activate tensor core kernel, otherwise it will fall back to non tensor core version.")
@@ -76,6 +77,12 @@ fwd_cuda = load(
     ]
 )
 
+extra_ldflags = []
+if sys.platform == "win32":
+    extra_ldflags = ["cublas.lib"]
+else:
+    extra_ldflags = ["-lcublas"]
+
 bwd_cuda = load(
     name='bwd',
     sources=[f"{dir_path}/cpp/bwd.cu", f"{dir_path}/cpp/bwd.cpp"],
@@ -88,7 +95,5 @@ bwd_cuda = load(
         # "-keep",               # keep intermediate files (including .ptx and .cubin)
         "-arch=sm_120"
     ],
-    extra_ldflags=[
-        "-lcublas"
-    ]
+    extra_ldflags=extra_ldflags
 )
