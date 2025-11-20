@@ -14,3 +14,4 @@ build
 
 dquery.cu
 dquery
+*.png

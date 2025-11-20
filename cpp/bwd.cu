@@ -57,7 +57,22 @@ void bwd_cuda(
     // );
     // CHECK_CUDA_ERROR(cudaGetLastError());
 
-    // cuda_single::bwd_wmma_launcher(
+    cuda_single::bwd_wmma_launcher(
+       static_cast<const float*>(grad_output),
+       static_cast<const float*>(A),
+       static_cast<const float*>(Wa),
+       J0,
+       J1,
+       static_cast<const float*>(Wo),
+       static_cast<const float*>(bump_history),
+       static_cast<const float*>(r_init),
+       static_cast<float*>(grad_Wa),
+       static_cast<float*>(grad_Wo),
+       alpha, N, a_dim, seq_len, batch_size, activation_type
+    );
+    CHECK_CUDA_ERROR(cudaGetLastError());
+
+    // cuda_wmma::bwd_wmma_launcher(
     //    static_cast<const float*>(grad_output),
     //    static_cast<const float*>(A),
     //    static_cast<const float*>(Wa),
@@ -72,20 +87,7 @@ void bwd_cuda(
     // );
     // CHECK_CUDA_ERROR(cudaGetLastError());
 
-    cuda_wmma::bwd_wmma_launcher(
-       static_cast<const float*>(grad_output),
-       static_cast<const float*>(A),
-       static_cast<const float*>(Wa),
-       J0,
-       J1,
-       static_cast<const float*>(Wo),
-       static_cast<const float*>(bump_history),
-       static_cast<const float*>(r_init),
-       static_cast<float*>(grad_Wa),
-       static_cast<float*>(grad_Wo),
-       alpha, N, a_dim, seq_len, batch_size, activation_type
-    );
-    CHECK_CUDA_ERROR(cudaGetLastError());
+
 
 
 }

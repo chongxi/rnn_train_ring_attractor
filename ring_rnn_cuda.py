@@ -26,10 +26,10 @@ def ring_rnn_cuda_func(
     Returns:
         bump_history: (seq_len, batch_size, num_neurons) - neural state history
     """
-    activation_map = {'relu': 0, 'gelu': 1, 'tanh': 2, 'silu': 3}
-    if activation not in activation_map:
-        raise ValueError(f"Invalid activation '{activation}'. Must be one of {list(activation_map.keys())}.")
-    activation_type = activation_map[activation]
+    # activation_map = {'relu': 0, 'gelu': 1, 'tanh': 2, 'silu': 3}
+    # if activation not in activation_map:
+    #     raise ValueError(f"Invalid activation '{activation}'. Must be one of {list(activation_map.keys())}.")
+    # activation_type = activation_map[activation]
 
     return RingRnnCudaFunc.apply(
         action_signal,
@@ -39,127 +39,88 @@ def ring_rnn_cuda_func(
         Wo,
         r_init,
         alpha,
-        activation_type,
+        activation,
     )
 
 
 class RingRnnCudaFunc(Function):
     @staticmethod
-    def forward(
-            ctx,
-            action_signal,
-            Wa,
-            J0,
-            J1,
-            Wo,
-            r_init,
-            alpha,
-            activation_type,
-    ):
-        batch_size, seq_len, action_dim = action_signal.shape
-        num_neurons = Wa.shape[1]
+    def forward(ctx, action_signal, Wa, J0, J1, Wo, r_init, alpha, activation_name):
+        batch_size, seq_len, a_dim = action_signal.shape
+        N = Wa.shape[1]
 
-        bump_history = torch.empty(
-            seq_len + 1, batch_size, num_neurons,
-            device=action_signal.device,
-            dtype=torch.float32
+        r = r_init.clone()
+        bump_history = torch.empty(seq_len, batch_size, N, device=action_signal.device, dtype=action_signal.dtype)
+
+        # for t in range(seq_len):
+        #     A_t = action_signal[:, t, :]
+        #     Wa_flat = Wa.view(a_dim, N * N)
+        #     Wa_weighted = torch.matmul(A_t, Wa_flat).view(batch_size, N, N)
+        #     W_eff = J0 + J1 * Wo + Wa_weighted
+        #     recurrent_input = (W_eff @ r.unsqueeze(2)).squeeze(2)
+        #     recurrent_input_activated = non_linear(recurrent_input, activation_name)
+        #     r = r * (1 - alpha) + recurrent_input_activated * alpha
+        #     bump_history[t] = r
+
+
+        activation_map = {'relu': 0, 'gelu': 1, 'tanh': 2, 'silu': 3}
+        if activation_name not in activation_map:
+            raise ValueError(f"Invalid activation '{activation_name}'. Must be one of {list(activation_map.keys())}.")
+        activation_type = activation_map[activation_name]
+
+        fwd_cuda.fwd(
+            A=action_signal,
+            Wa=Wa,
+            J0=J0,
+            J1=J1,
+            Wo=Wo,
+            r_init=r,
+            # W_delta7=self.W_delta7,
+            bump_history=bump_history,
+            # r_history=self.r_history,
+            alpha=alpha,
+            activation_type=activation_type
         )
 
-        bump_history[0, :, :] = r_init
-
-        _ring_rnn_forward(
-            action_signal,
-            Wa,
-            J0,
-            J1,
-            Wo,
-            r_init,
-            bump_history,
-            alpha,
-            activation_type,
-        )
-
-        ctx.save_for_backward(action_signal, Wa, Wo, bump_history)
+        ctx.save_for_backward(action_signal, Wa, Wo, bump_history, r_init)
         ctx.J0 = J0
         ctx.J1 = J1
         ctx.alpha = alpha
-        ctx.activation_type = activation_type
+        ctx.activation_name = activation_name
 
-        return bump_history[1:, :, :]
+        return bump_history
+
     @staticmethod
-    def backward(ctx, grad_bump_history):
-        print("grad_output.shape: ", grad_bump_history.shape)
-        action_signal, Wa, Wo, bump_history = ctx.saved_tensors
+    def backward(ctx, grad_output):
+        action_signal, Wa, Wo, bump_history, r_init = ctx.saved_tensors
+        alpha = ctx.alpha
+        activation_name = ctx.activation_name
         J0 = ctx.J0
         J1 = ctx.J1
-        alpha = ctx.alpha
-        activation_type = ctx.activation_type
+        batch_size, seq_len, a_dim = action_signal.shape
+        N = Wa.shape[1]
 
-        grad_Wa, grad_Wo = _ring_rnn_backward(
-            grad_bump_history,
-            action_signal,
-            Wa,
-            J0,
-            J1,
-            Wo,
-            bump_history,
-            alpha,
-            activation_type,
+        grad_Wa = torch.zeros_like(Wa)
+        grad_Wo = torch.zeros_like(Wo)
+
+        activation_map = {'relu': 0, 'gelu': 1, 'tanh': 2, 'silu': 3}
+        if activation_name not in activation_map:
+            raise ValueError(f"Invalid activation '{activation_name}'. Must be one of {list(activation_map.keys())}.")
+        activation_type = activation_map[activation_name]
+
+        bwd_cuda.bwd(
+            grad_output=grad_output.contiguous(),
+            A=action_signal,
+            Wa=Wa,
+            J0=J0,
+            J1=J1,
+            Wo=Wo,
+            bump_history=bump_history,
+            r_init=r_init,
+            grad_Wa=grad_Wa,
+            grad_Wo=grad_Wo,
+            alpha=alpha,
+            activation_type=activation_type
         )
-
         return None, grad_Wa, None, None, grad_Wo, None, None, None
 
-
-def _ring_rnn_forward(
-        action_signal,
-        Wa,
-        J0,
-        J1,
-        Wo,
-        r_init,
-        bump_history,
-        alpha,
-        activation_type,
-):
-    fwd_cuda.fwd(
-        A=action_signal,
-        Wa=Wa,
-        J0=J0,
-        J1=J1,
-        Wo=Wo,
-        r_init=r_init,
-        bump_history=bump_history,
-        alpha=alpha,
-        activation_type=activation_type,
-    )
-
-
-def _ring_rnn_backward(
-        grad_output,
-        action_signal,
-        Wa,
-        J0,
-        J1,
-        Wo,
-        bump_history,
-        alpha,
-        activation_type,
-):
-    grad_Wa = torch.zeros_like(Wa)
-    grad_Wo = torch.zeros_like(Wo)
-
-    bwd_cuda.bwd(
-        grad_output=grad_output,
-        A=action_signal,
-        Wa=Wa,
-        J0=J0,
-        J1=J1,
-        Wo=Wo,
-        bump_history=bump_history,
-        grad_Wa=grad_Wa,
-        grad_Wo=grad_Wo,
-        alpha=alpha,
-        activation_type=activation_type
-    )
-
-    return grad_Wa, grad_Wo

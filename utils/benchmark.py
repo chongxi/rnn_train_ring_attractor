@@ -10,8 +10,13 @@ def set_seed(seed=42):
         torch.cuda.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
 
+
 torch.set_printoptions(linewidth=200)
-np.set_printoptions(linewidth=200, precision=6, suppress=True)
+np.set_printoptions(
+    precision=4,      # 6 decimal places
+    suppress=True,    # Don't use scientific notation for small numbers
+    linewidth=200,    # Wider lines
+    formatter={'float': lambda x: f'{x:>12.4f}'})
 
 def check_tensor_match(tsr_impl, tsr_ref, name, rtol=1e-5, atol=1e-8, max_print=1):
     if not torch.allclose(tsr_impl, tsr_ref, rtol=rtol, atol=atol):

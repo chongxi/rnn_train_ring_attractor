@@ -1,14 +1,20 @@
 import torch
 from torch.autograd import Function
 from utils.benchmark import *
-from rnn_cuda import bwd_cuda
+from rnn_cuda import bwd_cuda, fwd_cuda
 
 from ring_rnn_cuda import ring_rnn_cuda_func
 
 import torch
 from torch.autograd import Function
 torch.set_printoptions(linewidth=200)
-np.set_printoptions(linewidth=200, precision=6, suppress=True)
+# np.set_printoptions(linewidth=200, precision=6, suppress=True)
+
+np.set_printoptions(
+    precision=4,      # 6 decimal places
+    suppress=True,    # Don't use scientific notation for small numbers
+    linewidth=200,    # Wider lines
+    formatter={'float': lambda x: f'{x:>12.4f}'})
 
 class CalcBumpFunction(Function):
     @staticmethod
@@ -188,15 +194,35 @@ class CalcBumpFunction_permute(Function):
         r = r_init.clone()
         bump_history = torch.empty(seq_len, batch_size, N, device=action_signal.device, dtype=action_signal.dtype)
 
-        for t in range(seq_len):
-            A_t = action_signal[:, t, :]
-            Wa_flat = Wa.view(a_dim, N * N)
-            Wa_weighted = torch.matmul(A_t, Wa_flat).view(batch_size, N, N)
-            W_eff = J0 + J1 * Wo + Wa_weighted
-            recurrent_input = (W_eff @ r.unsqueeze(2)).squeeze(2)
-            recurrent_input_activated = non_linear(recurrent_input, activation_name)
-            r = r * (1 - alpha) + recurrent_input_activated * alpha
-            bump_history[t] = r
+        # for t in range(seq_len):
+        #     A_t = action_signal[:, t, :]
+        #     Wa_flat = Wa.view(a_dim, N * N)
+        #     Wa_weighted = torch.matmul(A_t, Wa_flat).view(batch_size, N, N)
+        #     W_eff = J0 + J1 * Wo + Wa_weighted
+        #     recurrent_input = (W_eff @ r.unsqueeze(2)).squeeze(2)
+        #     recurrent_input_activated = non_linear(recurrent_input, activation_name)
+        #     r = r * (1 - alpha) + recurrent_input_activated * alpha
+        #     bump_history[t] = r
+
+
+        activation_map = {'relu': 0, 'gelu': 1, 'tanh': 2, 'silu': 3}
+        if activation_name not in activation_map:
+            raise ValueError(f"Invalid activation '{activation_name}'. Must be one of {list(activation_map.keys())}.")
+        activation_type = activation_map[activation_name]
+
+        fwd_cuda.fwd(
+            A=action_signal,
+            Wa=Wa,
+            J0=J0,
+            J1=J1,
+            Wo=Wo,
+            r_init=r,
+            # W_delta7=self.W_delta7,
+            bump_history=bump_history,
+            # r_history=self.r_history,
+            alpha=alpha,
+            activation_type=activation_type
+        )
 
         ctx.save_for_backward(action_signal, Wa, Wo, bump_history, r_init)
         ctx.J0 = J0
@@ -475,7 +501,7 @@ if __name__ == "__main__":
     # print(f"torch.autograd.gradcheck passed: {test}")
 
     num_neur = 512
-    a_dim = 32
+    a_dim = 16
     act = "silu"
     bs = 64
     seq_len = 4
@@ -524,14 +550,37 @@ if __name__ == "__main__":
 
     check_tensor_match(tsr_ref=grad_Wa_ref, tsr_impl=grad_Wa_impl, name="Backward Wa", max_print=10)
     # check_tensor_match(tsr_ref=grad_Wa_ref, tsr_impl=grad_Wa_impl, name="Backward Wa", atol=1e-2, rtol=1e-3, max_print=10)
+    print("a idx = 0")
+    print("First 10")
     print("ref : ", grad_Wa_ref[0, 0, :10].cpu().numpy())
     print("impl: ", grad_Wa_impl[0, 0, :10].cpu().numpy())
+    print("Last 10")
+    print("ref : ", grad_Wa_ref[0, 0, -10:].cpu().numpy())
+    print("impl: ", grad_Wa_impl[0, 0, -10:].cpu().numpy())
+    print("a idx = last")
+    print("First 10")
+    print("ref : ", grad_Wa_ref[-1, 0, :10].cpu().numpy())
+    print("impl: ", grad_Wa_impl[-1, 0, :10].cpu().numpy())
+    print("Last 10")
+    print("ref : ", grad_Wa_ref[-1, 0, -10:].cpu().numpy())
+    print("impl: ", grad_Wa_impl[-1, 0, -10:].cpu().numpy())
 
     check_tensor_match(tsr_ref=grad_Wo_ref, tsr_impl=grad_Wo_impl, name="Backward Wo", max_print=10)
     # check_tensor_match(tsr_ref=grad_Wo_ref, tsr_impl=grad_Wo_impl, name="Backward Wo", atol=1e-2, rtol=1e-3, max_print=10)
+    print("N idx=0")
+    print("First 10")
     print("ref : ", grad_Wo_ref[0, :10].cpu().numpy())
     print("impl: ", grad_Wo_impl[0, :10].cpu().numpy())
-
+    print("Last 10")
+    print("ref : ", grad_Wo_ref[0, -10:].cpu().numpy())
+    print("impl: ", grad_Wo_impl[0, -10:].cpu().numpy())
+    print("N idx=last")
+    print("First 10")
+    print("ref : ", grad_Wo_ref[-1, :10].cpu().numpy())
+    print("impl: ", grad_Wo_impl[-1, :10].cpu().numpy())
+    print("Last 10")
+    print("ref : ", grad_Wo_ref[-1, -10:].cpu().numpy())
+    print("impl: ", grad_Wo_impl[-1, -10:].cpu().numpy())
 
     # # ============ LATENCY BENCHMARKING ============
     # print("\n" + "="*60)
