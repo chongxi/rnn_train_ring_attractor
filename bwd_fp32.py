@@ -3,6 +3,8 @@ from torch.autograd import Function
 from utils.benchmark import *
 from rnn_cuda import bwd_cuda
 
+from ring_rnn_cuda import ring_rnn_cuda_func
+
 import torch
 from torch.autograd import Function
 torch.set_printoptions(linewidth=200)
@@ -31,46 +33,33 @@ class CalcBumpFunction(Function):
         N = Wa.shape[1]
 
         r = r_init.clone()
-        # Start with r_init so we have [r_0, r_1, r_2, ..., r_T]
-        bump_history = [r_init]
+        bump_history = []
+        recurrent_input_history = []  # 👈 NEW: Save pre-activation values
 
         for t in range(seq_len):
             A_t = action_signal[:, t, :]
-
-            # Compute Wa contribution
             Wa_flat = Wa.view(a_dim, N * N)
             Wa_weighted = torch.matmul(A_t, Wa_flat).view(batch_size, N, N)
-
-            # Effective weight matrix
             W_eff = J0 + J1 * Wo + Wa_weighted
-
-            # Recurrent computation
             recurrent_input = (W_eff @ r.unsqueeze(2)).squeeze(2)
-
-            # Apply activation
+            recurrent_input_history.append(recurrent_input)  # 👈 Save it
             recurrent_input_activated = non_linear(recurrent_input, activation_name)
-
-            # Update state
             r = r * (1 - alpha) + recurrent_input_activated * alpha
             bump_history.append(r)
 
-        # Stack: bump_history_full = [r_0, r_1, ..., r_T] shape (batch_size, seq_len+1, N)
-        bump_history_full = torch.stack(bump_history, dim=1)
-
-        # Save full history for backward (includes r_init at index 0)
-        ctx.save_for_backward(action_signal, Wa, Wo, bump_history_full)
+        bump_history = torch.stack(bump_history, dim=1)
+        recurrent_input_history = torch.stack(recurrent_input_history, dim=1)  # [batch, seq_len, N]
+        ctx.save_for_backward(action_signal, Wa, Wo, bump_history, recurrent_input_history, r_init)
         ctx.J0 = J0
         ctx.J1 = J1
         ctx.alpha = alpha
         ctx.activation_name = activation_name
 
-        # Return only [r_1, r_2, ..., r_T] - exclude r_init
-        return bump_history_full[:, 1:, :]
+        return bump_history
 
     @staticmethod
     def backward(ctx, grad_output):
-        action_signal, Wa, Wo, bump_history_full = ctx.saved_tensors
-        # print("Action signal shape: ", action_signal.shape)
+        action_signal, Wa, Wo, bump_history, recurrent_input_history, r_init = ctx.saved_tensors
         alpha = ctx.alpha
         activation_name = ctx.activation_name
         J0 = ctx.J0
@@ -78,135 +67,226 @@ class CalcBumpFunction(Function):
         batch_size, seq_len, a_dim = action_signal.shape
         N = Wa.shape[1]
 
-        # Initialize gradients
         grad_Wa = torch.zeros_like(Wa)
         grad_Wo = torch.zeros_like(Wo)
 
+        # Initialize grad_r for the NEXT timestep (starts at 0 after the sequence)
+        grad_r_next = torch.zeros(batch_size, N, device=grad_output.device, dtype=grad_output.dtype)
 
-        bump_history_full = bump_history_full.permute(1, 0, 2).contiguous()
-        grad_output = grad_output.permute(1, 0, 2).contiguous()
+        for t in reversed(range(seq_len)):
+            # Get r_prev: either from bump_history[t-1] or r_init if t==0
+            if t == 0:
+                r_prev = r_init
+            else:
+                r_prev = bump_history[:, t - 1, :]
+            recurrent_input = recurrent_input_history[:, t, :]
+            A_t = action_signal[:, t, :]
+            Wa_flat = Wa.view(a_dim, N * N)
+            Wa_weighted = torch.matmul(A_t, Wa_flat).view(batch_size, N, N)
+            W_eff = J0 + J1 * Wo + Wa_weighted
+            grad_r_current = grad_output[:, t, :] + grad_r_next
+            activation_derivative = non_linear_derivative(recurrent_input, activation_name)
+            grad_recurrent_input = activation_derivative * grad_r_current * alpha
+            grad_W_eff = torch.bmm(
+                grad_recurrent_input.unsqueeze(2),
+                r_prev.unsqueeze(1)
+            )
+            grad_Wo = grad_Wo + J1 * grad_W_eff.sum(dim=0)
+            grad_Wa_weighted_flat = grad_W_eff.view(batch_size, N * N)
+            grad_Wa_flat = torch.matmul(A_t.t(), grad_Wa_weighted_flat)
+            grad_Wa = grad_Wa + grad_Wa_flat.view(a_dim, N, N)
+            grad_r_from_recurrent = (W_eff.transpose(1, 2) @ grad_recurrent_input.unsqueeze(2)).squeeze(2)
+            grad_r_next = grad_r_from_recurrent + grad_r_current * (1 - alpha)
+
+        return None, grad_Wa, None, None, grad_Wo, None, None, None
+
+class CalcBumpFunction_permute_re(Function):
+    @staticmethod
+    def forward(ctx, action_signal, Wa, J0, J1, Wo, r_init, alpha, activation_name):
+        batch_size, seq_len, a_dim = action_signal.shape
+        N = Wa.shape[1]
+
+        r = r_init.clone()
+        bump_history = torch.empty(seq_len, batch_size, N, device=action_signal.device, dtype=action_signal.dtype)
+        recurrent_input_history = torch.empty(seq_len, batch_size, N, device=action_signal.device, dtype=action_signal.dtype)
+
+        for t in range(seq_len):
+            A_t = action_signal[:, t, :]
+            Wa_flat = Wa.view(a_dim, N * N)
+            Wa_weighted = torch.matmul(A_t, Wa_flat).view(batch_size, N, N)
+            W_eff = J0 + J1 * Wo + Wa_weighted
+            recurrent_input = (W_eff @ r.unsqueeze(2)).squeeze(2)
+            recurrent_input_history[t] = recurrent_input
+            recurrent_input_activated = non_linear(recurrent_input, activation_name)
+            r = r * (1 - alpha) + recurrent_input_activated * alpha
+            bump_history[t] = r
+
+        ctx.save_for_backward(action_signal, Wa, Wo, bump_history, recurrent_input_history, r_init)
+        ctx.J0 = J0
+        ctx.J1 = J1
+        ctx.alpha = alpha
+        ctx.activation_name = activation_name
+
+        return bump_history
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        action_signal, Wa, Wo, bump_history, recurrent_input_history, r_init = ctx.saved_tensors
+        alpha = ctx.alpha
+        activation_name = ctx.activation_name
+        J0 = ctx.J0
+        J1 = ctx.J1
+        batch_size, seq_len, a_dim = action_signal.shape
+        N = Wa.shape[1]
+
+        grad_Wa = torch.zeros_like(Wa)
+        grad_Wo = torch.zeros_like(Wo)
+
+        grad_r_next = torch.zeros(batch_size, N, device=grad_output.device, dtype=grad_output.dtype)
+
+        for t in reversed(range(seq_len)):
+            if t == 0:
+                r_prev = r_init
+            else:
+                r_prev = bump_history[t - 1]
+
+            recurrent_input = recurrent_input_history[t]
+
+            A_t = action_signal[:, t, :]
+            Wa_flat = Wa.view(a_dim, N * N)
+            Wa_weighted = torch.matmul(A_t, Wa_flat).view(batch_size, N, N)
+            W_eff = J0 + J1 * Wo + Wa_weighted
+
+            grad_r_current = grad_output[t] + grad_r_next
+
+            activation_derivative = non_linear_derivative(recurrent_input, activation_name)
+            grad_recurrent_input = activation_derivative * grad_r_current * alpha
+
+            grad_W_eff = torch.bmm(
+                grad_recurrent_input.unsqueeze(2),
+                r_prev.unsqueeze(1)
+            )
+
+            grad_Wo = grad_Wo + J1 * grad_W_eff.sum(dim=0)
+
+            grad_Wa_weighted_flat = grad_W_eff.view(batch_size, N * N)
+            grad_Wa_flat = torch.matmul(A_t.t(), grad_Wa_weighted_flat)
+            grad_Wa = grad_Wa + grad_Wa_flat.view(a_dim, N, N)
+
+            grad_r_from_recurrent = (W_eff.transpose(1, 2) @ grad_recurrent_input.unsqueeze(2)).squeeze(2)
+            grad_r_next = grad_r_from_recurrent + grad_r_current * (1 - alpha)
+
+        return None, grad_Wa, None, None, grad_Wo, None, None, None
+
+
+class CalcBumpFunction_permute(Function):
+    @staticmethod
+    def forward(ctx, action_signal, Wa, J0, J1, Wo, r_init, alpha, activation_name):
+        batch_size, seq_len, a_dim = action_signal.shape
+        N = Wa.shape[1]
+
+        r = r_init.clone()
+        bump_history = torch.empty(seq_len, batch_size, N, device=action_signal.device, dtype=action_signal.dtype)
+
+        for t in range(seq_len):
+            A_t = action_signal[:, t, :]
+            Wa_flat = Wa.view(a_dim, N * N)
+            Wa_weighted = torch.matmul(A_t, Wa_flat).view(batch_size, N, N)
+            W_eff = J0 + J1 * Wo + Wa_weighted
+            recurrent_input = (W_eff @ r.unsqueeze(2)).squeeze(2)
+            recurrent_input_activated = non_linear(recurrent_input, activation_name)
+            r = r * (1 - alpha) + recurrent_input_activated * alpha
+            bump_history[t] = r
+
+        ctx.save_for_backward(action_signal, Wa, Wo, bump_history, r_init)
+        ctx.J0 = J0
+        ctx.J1 = J1
+        ctx.alpha = alpha
+        ctx.activation_name = activation_name
+
+        return bump_history
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        action_signal, Wa, Wo, bump_history, r_init = ctx.saved_tensors
+        alpha = ctx.alpha
+        activation_name = ctx.activation_name
+        J0 = ctx.J0
+        J1 = ctx.J1
+        batch_size, seq_len, a_dim = action_signal.shape
+        N = Wa.shape[1]
+
+        grad_Wa = torch.zeros_like(Wa)
+        grad_Wo = torch.zeros_like(Wo)
+# PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+#     m.def("bwd", &bwd, "bwd (CUDA)",
+#           py::arg("grad_output"),
+# py::arg("A"),
+# py::arg("Wa"),
+# py::arg("J0"),
+# py::arg("J1"),
+# py::arg("Wo"),
+# py::arg("bump_history"),
+# py::arg("r_init"),
+# py::arg("grad_Wa"),
+# py::arg("grad_Wo"),
+# py::arg("alpha"),
+# py::arg("activation_type"));
+# }
+
         activation_map = {'relu': 0, 'gelu': 1, 'tanh': 2, 'silu': 3}
         if activation_name not in activation_map:
             raise ValueError(f"Invalid activation '{activation_name}'. Must be one of {list(activation_map.keys())}.")
         activation_type = activation_map[activation_name]
 
         bwd_cuda.bwd(
-            grad_output=grad_output,
+            grad_output=grad_output.contiguous(),
             A=action_signal,
             Wa=Wa,
             J0=J0,
             J1=J1,
             Wo=Wo,
-            bump_history=bump_history_full,
+            bump_history=bump_history,
+            r_init=r_init,
             grad_Wa=grad_Wa,
             grad_Wo=grad_Wo,
             alpha=alpha,
             activation_type=activation_type
         )
 
-
-        # # Backward pass through time
         # grad_r = torch.zeros(batch_size, N, device=grad_output.device, dtype=grad_output.dtype)
+        #
         # for t in reversed(range(seq_len)):
-        #     # ==================== Kernel 1: Recompute W_eff and re ====================
-        #     # CUDA inputs:
-        #     #   A:            [batch_size, seq_len, a_dim]
-        #     #   Wa:           [a_dim, N, N]
-        #     #   J0:           [N, N]
-        #     #   Wo:           [N, N]
-        #     #   bump_history: [seq_len+1, batch_size, N]
-        #     # CUDA outputs:
-        #     #   W_eff_out:    [batch_size, N, N]
-        #     #   re_out:       [batch_size, N]
-        #     # PyTorch current shapes:
-        #     #   action_signal:      [batch_size, seq_len, a_dim]
-        #     #   Wa:                 [a_dim, N, N]
-        #     #   J0:                 [N, N]
-        #     #   Wo:                 [N, N]
-        #     #   bump_history_full:  [batch_size, seq_len+1, N]
+        #     if t == 0:
+        #         r_prev = r_init
+        #     else:
+        #         r_prev = bump_history[t - 1]
         #
-        #     r_prev = bump_history_full[:, t, :]  # [batch_size, N]
-        #
-        #     A_t = action_signal[:, t, :]  # [batch_size, a_dim]
+        #     A_t = action_signal[:, t, :]
         #     Wa_flat = Wa.view(a_dim, N * N)
         #     Wa_weighted = torch.matmul(A_t, Wa_flat).view(batch_size, N, N)
-        #     W_eff = J0 + J1 * Wo + Wa_weighted  # [batch_size, N, N]
+        #     W_eff = J0 + J1 * Wo + Wa_weighted
         #
-        #     recurrent_input = (W_eff @ r_prev.unsqueeze(2)).squeeze(2)  # [batch_size, N] (this is "re")
+        #     recurrent_input = (W_eff @ r_prev.unsqueeze(2)).squeeze(2)
         #
+        #     grad_r = grad_r + grad_output[t]
         #
-        #     # ==================== Kernel 2: Compute grad_re ====================
-        #     # CUDA inputs:
-        #     #   grad_output: [seq_len, batch_size, N]
-        #     #   grad_r:      [batch_size, N]
-        #     #   re:          [batch_size, N]
-        #     # CUDA outputs:
-        #     #   grad_re:     [batch_size, N]
-        #     # PyTorch current shapes:
-        #     #   grad_output: [batch_size, seq_len, N]
-        #     #   grad_r:      [batch_size, N]
-        #     #   recurrent_input: [batch_size, N]
-        #
-        #     activation_derivative = non_linear_derivative(recurrent_input, activation_name)  # [batch_size, N]
-        #     grad_recurrent_input = activation_derivative * (grad_r + grad_output[:, t, :]) * alpha  # [batch_size, N]
-        #
-        #     # ==================== Kernel 3: Compute grad_r ====================
-        #     # CUDA inputs:
-        #     #   W_eff:   [batch_size, N, N]
-        #     #   grad_re: [batch_size, N]
-        #     #   grad_r:  [batch_size, N]      - in/out
-        #     # CUDA outputs:
-        #     #   grad_r:  [batch_size, N]     (updated)
-        #     # PyTorch current shapes:
-        #     #   W_eff:               [batch_size, N, N]
-        #     #   grad_recurrent_input: [batch_size, N]
-        #     #   grad_r:              [batch_size, N]
-        #
-        #     grad_r_from_recurrent = (W_eff.transpose(1, 2) @ grad_recurrent_input.unsqueeze(2)).squeeze(2)  # [batch_size, N]
-        #     grad_r = grad_r_from_recurrent + grad_r * (1 - alpha)  # [batch_size, N]
-        #
-        #     # ==================== Kernel 4a: Compute grad_W_eff ====================
-        #     # CUDA inputs:
-        #     #   grad_re: [batch_size, N]
-        #     #   bump_history:  [batch_size, seq_len+1, N]
-        #     # CUDA outputs:
-        #     #   grad_W_eff: [batch_size, N, N] in bf16
-        #     # PyTorch current shapes:
-        #     #   grad_recurrent_input: [batch_size, N]
-        #     #   bump_history_full:    [batch_size, seq_len+1, N]
-        #     #   r_prev:               [batch_size, N]
+        #     activation_derivative = non_linear_derivative(recurrent_input, activation_name)
+        #     grad_recurrent_input = activation_derivative * grad_r * alpha
         #
         #     grad_W_eff = torch.bmm(
-        #         grad_recurrent_input.unsqueeze(2),  # [batch_size, N, 1]
-        #         r_prev.unsqueeze(1)                 # [batch_size, 1, N]
-        #     )  # [batch_size, N, N]
+        #         grad_recurrent_input.unsqueeze(2),
+        #         r_prev.unsqueeze(1)
+        #     )
         #
-        #     # ==================== Kernel 4b: Accumulate grad_Wo ====================
-        #     # CUDA inputs:
-        #     #   grad_W_eff: [batch_size, N, N] in bf16
-        #     # CUDA outputs:
-        #     #   grad_Wo: [N, N] (accumulated)
-        #     # PyTorch current shapes:
-        #     #   grad_W_eff: [batch_size, N, N]
-        #     #   grad_Wo:    [N, N]
+        #     grad_Wo = grad_Wo + J1 * grad_W_eff.sum(dim=0)
         #
-        #     grad_Wo = grad_Wo + J1 * grad_W_eff.sum(dim=0)  # [N, N]
+        #     grad_Wa_weighted_flat = grad_W_eff.view(batch_size, N * N)
+        #     grad_Wa_flat = torch.matmul(A_t.t(), grad_Wa_weighted_flat)
+        #     grad_Wa = grad_Wa + grad_Wa_flat.view(a_dim, N, N)
         #
-        #     # ==================== Kernel 5: Compute grad_Wa ====================
-        #     # CUDA inputs:
-        #     #   A:         [batch_size, seq_len, a_dim]
-        #     #   grad_W_eff:  [batch_size, N, N] in bf16
-        #     # CUDA outputs:
-        #     #   grad_Wa_flat: [a_dim, N*N]
-        #     # PyTorch current shapes:
-        #     #   action_signal: [batch_size, seq_len, a_dim]
-        #     #   A_t:           [batch_size, a_dim]
-        #     #   grad_W_eff:    [batch_size, N, N]
-        #     #   grad_Wa:       [a_dim, N, N]
-        #
-        #     grad_Wa_weighted_flat = grad_W_eff.view(batch_size, N * N)  # [batch_size, N*N]
-        #     grad_Wa_flat = torch.matmul(A_t.t(), grad_Wa_weighted_flat)  # [a_dim, N*N]
-        #     grad_Wa = grad_Wa + grad_Wa_flat.view(a_dim, N, N)  # [a_dim, N, N]
+        #     grad_r_from_recurrent = (W_eff.transpose(1, 2) @ grad_recurrent_input.unsqueeze(2)).squeeze(2)
+        #     grad_r = grad_r_from_recurrent + grad_r * (1 - alpha)
 
         return None, grad_Wa, None, None, grad_Wo, None, None, None
 
@@ -259,7 +339,8 @@ def non_linear_derivative(x, activation_name):
         raise ValueError(f"Unknown activation: {activation_name}")
 
 
-def calc_bump_impl(action_signal, Wa, J0, J1, Wo, r_init, alpha, activation_name):
+
+def calc_bump_impl(action_signal, Wa, J0, J1, Wo, W_delta7, r_init, alpha, activation_name):
     """
     Wrapper function using custom autograd.
 
@@ -276,9 +357,22 @@ def calc_bump_impl(action_signal, Wa, J0, J1, Wo, r_init, alpha, activation_name
     Returns:
         bump_history: (batch_size, seq_len, N)
     """
-    return CalcBumpFunction.apply(
+    return CalcBumpFunction_permute.apply(
         action_signal, Wa, J0, J1, Wo, r_init, alpha, activation_name
     )
+
+    # bump_history =  CalcBumpFunction_permute.apply(
+    #     action_signal, Wa, J0, J1, Wo, r_init, alpha, activation_name
+    # )
+    #
+    # bump_history = bump_history.permute(1, 0, 2)
+    # r_delta7 = bump_history @ W_delta7
+    # r_max = r_delta7.max(dim=2, keepdim=True)[0]
+    # r_history = r_delta7 / r_max
+    #
+    # return r_history
+
+
 
 
 def param_prep(num_neurons, a_dim, device='cpu'):
@@ -287,7 +381,14 @@ def param_prep(num_neurons, a_dim, device='cpu'):
     J1 = 0.1
     Wo = torch.randn(num_neurons, num_neurons, device=device, requires_grad=True)
 
-    return Wa, J0, J1, Wo
+    indices = torch.arange(num_neurons, dtype=torch.float32)
+    i = indices.unsqueeze(1)
+    j = indices.unsqueeze(0)
+    angle_diff = 2 * torch.pi * (i - j) / num_neurons
+    W_delta7 = torch.cos(angle_diff).to(device="cuda").requires_grad_(False)
+
+
+    return Wa, J0, J1, Wo, W_delta7
 
 
 def input_prep(num_neurons, batch_size, a_dim, seq_len, device='cpu'):
@@ -317,6 +418,34 @@ def calc_bump_ref(action_signal, Wa, J0, J1, Wo, r_init, alpha, activation_name)
         bump_history.append(r)
 
     return torch.stack(bump_history, dim=1)
+
+def calc_bump_permute_ref(action_signal, Wa, J0, J1, Wo, W_delta7, r_init, alpha, activation_name):
+    """Original calc_bump for reference."""
+    batch_size, seq_len, a_dim = action_signal.shape
+    N = Wa.shape[1]
+    r = r_init.clone()
+    bump_history = []
+    bump_history = torch.empty(seq_len, batch_size, N, device="cuda")
+
+    for t in range(seq_len):
+        A_t = action_signal[:, t, :]
+        Wa_flat = Wa.view(a_dim, N * N)
+        Wa_weighted = torch.matmul(A_t, Wa_flat).view(batch_size, N, N)
+
+        W_eff = J0 + J1 * Wo + Wa_weighted
+        recurrent_input = (W_eff @ r.unsqueeze(2)).squeeze(2)
+        recurrent_input = non_linear(recurrent_input, activation_name)
+        r = r * (1 - alpha) + recurrent_input * alpha
+        bump_history[t, :, :] = r
+
+    return bump_history
+
+    # bump_history = bump_history.permute(1, 0, 2)
+    # r_delta7 = bump_history @ W_delta7
+    # r_max = r_delta7.max(dim=2, keepdim=True)[0]
+    # r_history = r_delta7 / r_max
+    #
+    # return r_history
 
 if __name__ == "__main__":
 
@@ -364,20 +493,22 @@ if __name__ == "__main__":
     print(f"batch_size: {bs} num_neurons: {num_neur}, action dim: {a_dim}, seq_len {seq_len}, activation: {act}:")
 
     set_seed(42)
-    Wa_impl, J0_impl, J1_impl, Wo_impl = param_prep(num_neurons=num_neur, a_dim=a_dim, device=device)
+    Wa_impl, J0_impl, J1_impl, Wo_impl, W_delta7_impl = param_prep(num_neurons=num_neur, a_dim=a_dim, device=device)
     action_signal_impl, r_init_impl, _ = input_prep(num_neurons=num_neur, batch_size=bs, a_dim=a_dim, seq_len=seq_len, device=device)
 
     set_seed(42)
-    Wa_ref, J0_ref, J1_ref, Wo_ref = param_prep(num_neurons=num_neur, a_dim=a_dim, device=device)
+    Wa_ref, J0_ref, J1_ref, Wo_ref, W_delta7_ref = param_prep(num_neurons=num_neur, a_dim=a_dim, device=device)
     action_signal_ref, r_init_ref, _ = input_prep(num_neurons=num_neur, batch_size=bs, a_dim=a_dim, seq_len=seq_len, device=device)
 
 
-    result_impl = calc_bump_ref(action_signal_impl, Wa_impl, J0_impl, J1_impl, Wo_impl, r_init_impl, alpha, act)
-    result_ref = calc_bump_impl(action_signal_ref, Wa_ref, J0_ref, J1_ref, Wo_ref, r_init_ref, alpha, act)
+    result_impl = calc_bump_impl(action_signal_impl, Wa_impl, J0_impl, J1_impl, Wo_impl, W_delta7_impl, r_init_impl, alpha, act)
+    # result_impl = ring_rnn_cuda_func(action_signal_impl, Wa_impl, J0_impl, J1_impl, Wo_impl, r_init_impl, alpha, act).permute(1, 0, 2)
+    result_ref = calc_bump_permute_ref(action_signal_ref, Wa_ref, J0_ref, J1_ref, Wo_ref, W_delta7_ref, r_init_ref, alpha, act)
+
 
     gt = torch.randn_like(result_impl, device=device)
     gt_impl = gt.clone().detach()
-    check_tensor_match(tsr_ref=result_ref, tsr_impl=result_impl, name="Forward")
+    check_tensor_match(tsr_ref=result_ref, tsr_impl=result_impl, name="Forward", max_print=10)
 
     criterion = torch.nn.MSELoss()
 
@@ -391,65 +522,67 @@ if __name__ == "__main__":
     grad_Wa_impl = Wa_impl.grad
     grad_Wo_impl = Wo_impl.grad
 
-    check_tensor_match(tsr_ref=grad_Wa_ref, tsr_impl=grad_Wa_impl, name="Backward Wa", atol=1e-6, max_print=10)
+    check_tensor_match(tsr_ref=grad_Wa_ref, tsr_impl=grad_Wa_impl, name="Backward Wa", max_print=10)
+    # check_tensor_match(tsr_ref=grad_Wa_ref, tsr_impl=grad_Wa_impl, name="Backward Wa", atol=1e-2, rtol=1e-3, max_print=10)
     print("ref : ", grad_Wa_ref[0, 0, :10].cpu().numpy())
     print("impl: ", grad_Wa_impl[0, 0, :10].cpu().numpy())
 
-    check_tensor_match(tsr_ref=grad_Wo_ref, tsr_impl=grad_Wo_impl, name="Backward Wo", atol=1e-6, max_print=10)
+    check_tensor_match(tsr_ref=grad_Wo_ref, tsr_impl=grad_Wo_impl, name="Backward Wo", max_print=10)
+    # check_tensor_match(tsr_ref=grad_Wo_ref, tsr_impl=grad_Wo_impl, name="Backward Wo", atol=1e-2, rtol=1e-3, max_print=10)
     print("ref : ", grad_Wo_ref[0, :10].cpu().numpy())
     print("impl: ", grad_Wo_impl[0, :10].cpu().numpy())
 
 
-    # ============ LATENCY BENCHMARKING ============
-    print("\n" + "="*60)
-    print("LATENCY BENCHMARKING")
-    print("="*60)
-
-    # Forward pass latency
-    print("\n--- Forward Pass ---")
-    latency_ref_fwd = measure_latency_cuda(
-        calc_bump_ref,
-        action_signal_ref, Wa_ref, J0_ref, J1_ref,
-        Wo_ref, r_init_ref, alpha, act,
-        n_warmup=5, n_iters=50
-    )
-    print(f"Reference:      {latency_ref_fwd}")
-
-    latency_impl_fwd = measure_latency_cuda(
-        calc_bump_impl,
-        action_signal_impl, Wa_impl, J0_impl, J1_impl,
-        Wo_impl, r_init_impl, alpha, act,
-        n_warmup=5, n_iters=50
-    )
-    print(f"Implementation: {latency_impl_fwd}")
-
-    # Forward + Backward pass latency
-    print("\n--- Forward + Backward Pass ---")
-
-    def forward_backward_ref():
-        if Wa_ref.grad is not None:
-            Wa_ref.grad.zero_()
-        if Wo_ref.grad is not None:
-            Wo_ref.grad.zero_()
-
-        result = calc_bump_ref(action_signal_ref, Wa_ref, J0_ref,
-                               J1_ref, Wo_ref, r_init_ref, alpha, act)
-        loss = criterion(result, gt)
-        loss.backward()
-
-    def forward_backward_impl():
-        if Wa_impl.grad is not None:
-            Wa_impl.grad.zero_()
-        if Wo_impl.grad is not None:
-            Wo_impl.grad.zero_()
-
-        result = calc_bump_impl(action_signal_impl, Wa_impl, J0_impl,
-                                J1_impl, Wo_impl, r_init_impl, alpha, act)
-        loss = criterion(result, gt_impl)
-        loss.backward()
-
-    latency_ref_bwd = measure_latency_cuda(forward_backward_ref, n_warmup=5, n_iters=50)
-    print(f"Reference:      {latency_ref_bwd}")
-
-    latency_impl_bwd = measure_latency_cuda(forward_backward_impl, n_warmup=5, n_iters=50)
-    print(f"Implementation: {latency_impl_bwd}")
+    # # ============ LATENCY BENCHMARKING ============
+    # print("\n" + "="*60)
+    # print("LATENCY BENCHMARKING")
+    # print("="*60)
+    #
+    # # Forward pass latency
+    # print("\n--- Forward Pass ---")
+    # latency_ref_fwd = measure_latency_cuda(
+    #     calc_bump_ref,
+    #     action_signal_ref, Wa_ref, J0_ref, J1_ref,
+    #     Wo_ref, r_init_ref, alpha, act,
+    #     n_warmup=5, n_iters=50
+    # )
+    # print(f"Reference:      {latency_ref_fwd}")
+    #
+    # latency_impl_fwd = measure_latency_cuda(
+    #     calc_bump_impl,
+    #     action_signal_impl, Wa_impl, J0_impl, J1_impl,
+    #     Wo_impl, r_init_impl, alpha, act,
+    #     n_warmup=5, n_iters=50
+    # )
+    # print(f"Implementation: {latency_impl_fwd}")
+    #
+    # # Forward + Backward pass latency
+    # print("\n--- Forward + Backward Pass ---")
+    #
+    # def forward_backward_ref():
+    #     if Wa_ref.grad is not None:
+    #         Wa_ref.grad.zero_()
+    #     if Wo_ref.grad is not None:
+    #         Wo_ref.grad.zero_()
+    #
+    #     result = calc_bump_ref(action_signal_ref, Wa_ref, J0_ref,
+    #                            J1_ref, Wo_ref, r_init_ref, alpha, act)
+    #     loss = criterion(result, gt)
+    #     loss.backward()
+    #
+    # def forward_backward_impl():
+    #     if Wa_impl.grad is not None:
+    #         Wa_impl.grad.zero_()
+    #     if Wo_impl.grad is not None:
+    #         Wo_impl.grad.zero_()
+    #
+    #     result = calc_bump_impl(action_signal_impl, Wa_impl, J0_impl,
+    #                             J1_impl, Wo_impl, r_init_impl, alpha, act)
+    #     loss = criterion(result, gt_impl)
+    #     loss.backward()
+    #
+    # latency_ref_bwd = measure_latency_cuda(forward_backward_ref, n_warmup=5, n_iters=50)
+    # print(f"Reference:      {latency_ref_bwd}")
+    #
+    # latency_impl_bwd = measure_latency_cuda(forward_backward_impl, n_warmup=5, n_iters=50)
+    # print(f"Implementation: {latency_impl_bwd}")

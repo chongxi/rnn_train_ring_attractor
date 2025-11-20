@@ -1,7 +1,7 @@
 // #include "cuda_common.cuh"
 #include "../cuda_common.cuh"
 
-namespace cuda_fp32 {
+namespace cuda_simple {
     // ---------------------------------------------------------------
     // Kernel 1 – recompute W_eff and the recurrent input “re”
     // ---------------------------------------------------------------

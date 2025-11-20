@@ -4,7 +4,7 @@ from utils.generate_av_integration_data import AVIntegrationDataset
 from model_fp32 import GeneralizedRingAttractorNoGain_ref
 import numpy as np
 
-# from rnn_cuda import *
+from rnn_cuda import *
 from ring_rnn_cuda import ring_rnn_cuda_func
 from utils.benchmark import *
 
@@ -185,32 +185,45 @@ class GeneralizedRingAttractorNoGain(nn.Module):
         - bump_history: torch.Size([128, 64, 256])
         """
         batch_size = action_signal.shape[0]
+        # Pre-allocate intermediate tensors
+        # r_history = torch.empty(batch_size, self.seq_len, self.num_neurons, device='cuda', dtype=torch.float32)
+        # transposed for better performance
+        bump_history = torch.empty(batch_size, self.seq_len, self.num_neurons, device='cuda', dtype=torch.float32)
+        # bump_history = torch.empty(self.seq_len, batch_size, self.num_neurons, device='cuda', dtype=torch.float32)
 
         if r_init is None:
-            initial_angle = torch.full((batch_size,), torch.pi, device=self.device)
+            initial_angle = torch.full((self.batch_size,), torch.pi, device=self.device)
             r = create_initial_bump(initial_angle, self.num_neurons, device=self.device)
         else:
             r = r_init
 
         alpha = 0.15
 
-        bump_history = ring_rnn_cuda_func(
-            action_signal=action_signal,
+        activation_map = {'relu': 0, 'gelu': 1, 'tanh': 2, 'silu': 3}
+        if self.activation_name not in activation_map:
+            raise ValueError(f"Invalid activation_name '{self.activation_name}'. Must be one of {list(activation_map.keys())}.")
+        activation_type = activation_map[self.activation_name]
+
+        fwd_cuda.fwd(
+            A=action_signal,
             Wa=self.Wa,
             J0=self.J0,
             J1=self.J1,
             Wo=self.Wo,
             r_init=r,
+            # W_delta7=self.W_delta7,
+            bump_history=bump_history,
+            # r_history=self.r_history,
             alpha=alpha,
-            activation=self.activation_name,
+            activation_type=activation_type
         )
 
         # Compute r_history directly from bump_history
         bump_history = bump_history.permute(1, 0, 2)
         r_delta7 = bump_history @ self.W_delta7
         r_max = r_delta7.max(dim=2, keepdim=True)[0]
-        r_history = r_delta7 / r_max     
-        
+        r_history = r_delta7 / r_max
+
         return r_history.clone(), bump_history.clone()
 
 def benchmark(num_neurons, seq_len, action_dim, batch_size, activation, check_forward, check_backward, measure_latency):
@@ -327,7 +340,7 @@ if __name__ == "__main__":
     # Base parameters
     num_neurons = 512
     seq_len = 20
-    action_dim = 32
+    action_dim = 6
     # relu, gelu, tanh, silu
     activation = 'relu'
     batch_size = 256

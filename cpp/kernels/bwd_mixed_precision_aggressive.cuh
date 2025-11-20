@@ -1,6 +1,4 @@
 // #include "cuda_common.cuh"
-#include <charconv>
-
 #include "../cuda_common.cuh"
 #include <cuda_bf16.h>
 
@@ -57,7 +55,8 @@ namespace cuda_wmma {
         float J0,
         float J1,
         const float* Wo,              // [N, N]
-        const float* bump_history,    // [S+1, B, N]    (float)
+        const float* bump_history,    // [S, B, N]       ← CHANGED from [S+1, B, N]
+        const float* r_init,          // [B, N]          ← NEW
         const float* grad_output,     // [S, B, N]
         float* grad_r,                // [B, N] – in/out
         float*       W_eff_out,       // [B, N, N]      (float accumulator)
@@ -72,12 +71,13 @@ namespace cuda_wmma {
         int          batch_size)
     {
         // -----------------------------------------------------------------
-        // Index wrappers (same as forward kernel)
+        // Index wrappers
         // -----------------------------------------------------------------
         IndexWrapper<const float, 3> A_idx (A,  batch_size, seq_len, a_dim);
         IndexWrapper<const float, 3> Wa_idx(Wa, a_dim, N, N);
         IndexWrapper<const float, 2> Wo_idx(Wo, N, N);
-        IndexWrapper<const float, 3> bump_history_idx(bump_history, seq_len + 1, batch_size, N);
+        IndexWrapper<const float, 3> bump_history_idx(bump_history, seq_len, batch_size, N);  // ← CHANGED
+        IndexWrapper<const float, 2> r_init_idx(r_init, batch_size, N);                       // ← NEW
         IndexWrapper<const float, 3> grad_output_idx(grad_output, seq_len, batch_size, N);
         IndexWrapper<float, 2> grad_r_idx(grad_r, batch_size, N);
         IndexWrapper<float, 2> W_eff_out_idx(W_eff_out, batch_size, N * N);
@@ -94,6 +94,8 @@ namespace cuda_wmma {
         const int global_Non = blockIdx.x;
 
         if (global_m_base >= batch_size || global_Non >= N) return;
+
+        const bool is_first = (t == 0);  // ← NEW
 
         constexpr int ld = BK + 8;
         constexpr int lda = ld;
@@ -206,7 +208,11 @@ namespace cuda_wmma {
             //============================= Step 3: Load r[BM, BN] tile and perform partial sum ============================
             int frag_m = global_m_base + warp_idx_y * WMMA_M;
             if (frag_m < batch_size && frag_n < N) {
-                const float* pos_frag_r = &bump_history_idx.at(t, frag_m, frag_n);
+                // ← CHANGED: Conditional load based on timestep
+                const float* pos_frag_r = is_first ?
+                    &r_init_idx.at(frag_m, frag_n) :
+                    &bump_history_idx.at(t - 1, frag_m, frag_n);
+
                 wmma::load_matrix_sync(frag_r, pos_frag_r, N, wmma::mem_row_major);
                 for (size_t i = 0; i < frag_r.num_elements; ++i) {
                     frag_re.x[i] += frag_Wa_weighted.x[i] * frag_r.x[i];
@@ -509,7 +515,8 @@ void bwd_wmma_impl(
     float J0,                   // scalar
     float J1,                   // scalar
     const float* Wo,            // [N, N]
-    const float* bump_history,  // [B, S+1, N]
+    const float* bump_history,  // [S, B, N]       ← CHANGED from [S+1, B, N]
+    const float* r_init,        // [B, N]          ← NEW
     float* grad_Wa,             // [A_dim, N*N] – **must be zeroed** before call
     float* grad_Wo,             // [N, N]    – **must be zeroed** before call
     float alpha,
@@ -523,7 +530,7 @@ void bwd_wmma_impl(
     // -----------------------------------------------------------------
     float *grad_r, *W_eff_temp, *grad_re_temp;
     __nv_bfloat16 *grad_W_eff_temp_bf16, *A_t_temp_bf16;
-    
+
     cudaMalloc(&grad_r,        batch_size * N * sizeof(float));
     cudaMalloc(&W_eff_temp,   batch_size * N * N * sizeof(float));
     cudaMalloc(&grad_re_temp, batch_size * N * sizeof(float));
@@ -570,7 +577,7 @@ void bwd_wmma_impl(
 
         recompute_Weff_re_grad_re_kernel<ACT, BM, BN, BK, WMMA_M, WMMA_N, WMMA_K><<<gridSize, blockSize>>>(
                 A, Wa, J0, J1, Wo,
-                bump_history,
+                bump_history, r_init,  // ← CHANGED: added r_init
                 grad_output, grad_r,
                 W_eff_temp, grad_re_temp, A_t_temp_bf16, grad_W_eff_temp_bf16,
                 alpha, N, a_dim, seq_len, t, batch_size);
@@ -590,7 +597,8 @@ void bwd_wmma_impl(
         // Kernel 4a – Custom batched outer product with BF16 output
         // grad_W_eff[b, i, j] = grad_re[b, i] * r_prev[b, j]
         // -------------------------------------------------------------
-        const float* r_prev = bump_history + t * batch_size * N;
+        // ← CHANGED: Conditional r_prev pointer
+        const float* r_prev = (t == 0) ? r_init : (bump_history + (t - 1) * batch_size * N);
         
         dim3 block4a(TILE_N / THREAD_TILE_N, TILE_M / THREAD_TILE_M);
         dim3 grid4a((N + TILE_N - 1) / TILE_N, (N + TILE_M - 1) / TILE_M, batch_size);
@@ -605,7 +613,6 @@ void bwd_wmma_impl(
         // GEMM: [N, B] @ [B, N] = [N, N]
         // Using FP32 GEMM for this smaller reduction
         // -------------------------------------------------------------
-        float one = 1.0f;
         float beta = 1.0f;
 
         cublasSgemm(handle,
@@ -673,6 +680,7 @@ void bwd_wmma_impl(
         float J1,
         const float* Wo,
         const float* bump_history,
+        const float* r_init,
         float* grad_Wa,
         float* grad_Wo,
         float alpha,
@@ -683,10 +691,10 @@ void bwd_wmma_impl(
         int activation_type
     ){
         switch(activation_type){
-            case 0: bwd_wmma_impl<Activation::RELU>(grad_output, A, Wa, J0, J1, Wo, bump_history, grad_Wa, grad_Wo, alpha, N, a_dim, seq_len, batch_size); break;
-            case 1: bwd_wmma_impl<Activation::GELU>(grad_output, A, Wa, J0, J1, Wo, bump_history, grad_Wa, grad_Wo, alpha, N, a_dim, seq_len, batch_size); break;
-            case 2: bwd_wmma_impl<Activation::TANH>(grad_output, A, Wa, J0, J1, Wo, bump_history, grad_Wa, grad_Wo, alpha, N, a_dim, seq_len, batch_size); break;
-            case 3: bwd_wmma_impl<Activation::SILU>(grad_output, A, Wa, J0, J1, Wo, bump_history, grad_Wa, grad_Wo, alpha, N, a_dim, seq_len, batch_size); break;
+            case 0: bwd_wmma_impl<Activation::RELU>(grad_output, A, Wa, J0, J1, Wo, bump_history, r_init, grad_Wa, grad_Wo, alpha, N, a_dim, seq_len, batch_size); break;
+            case 1: bwd_wmma_impl<Activation::GELU>(grad_output, A, Wa, J0, J1, Wo, bump_history, r_init, grad_Wa, grad_Wo, alpha, N, a_dim, seq_len, batch_size); break;
+            case 2: bwd_wmma_impl<Activation::TANH>(grad_output, A, Wa, J0, J1, Wo, bump_history, r_init, grad_Wa, grad_Wo, alpha, N, a_dim, seq_len, batch_size); break;
+            case 3: bwd_wmma_impl<Activation::SILU>(grad_output, A, Wa, J0, J1, Wo, bump_history, r_init, grad_Wa, grad_Wo, alpha, N, a_dim, seq_len, batch_size); break;
         }
     }
 }// namespace cuda_wmma

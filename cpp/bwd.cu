@@ -1,8 +1,9 @@
 #include "cuda_common.cuh"
 #include "kernels/bwd_simple.cuh"
 // #include "kernels/bwd_mixed_precision_wmma.cuh"
-// #include "kernels/bwd_mixed_precision_aggressive.cuh"
+#include "kernels/bwd_mixed_precision_aggressive.cuh"
 #include "kernels/bwd_full_precision.cuh"
+
 #include "utils.cuh"
 
 void bwd_cuda(
@@ -13,6 +14,7 @@ void bwd_cuda(
     float J1,
     void* Wo,
     void* bump_history,
+    void* r_init,
     void* grad_Wa,
     void* grad_Wo,
     float alpha,
@@ -31,6 +33,7 @@ void bwd_cuda(
     float J1,
     void* Wo,
     void* bump_history,
+    void* r_init,
     void* grad_Wa,
     void* grad_Wo,
     float alpha,
@@ -40,7 +43,7 @@ void bwd_cuda(
     int batch_size,
     int activation_type
 ){
-    // cuda_fp32::bwd_fp32_launcher(
+    // cuda_simple::bwd_fp32_launcher(
     //     static_cast<const float*>(grad_output),
     //     static_cast<const float*>(A),
     //     static_cast<const float*>(Wa),
@@ -54,6 +57,21 @@ void bwd_cuda(
     // );
     // CHECK_CUDA_ERROR(cudaGetLastError());
 
+    // cuda_single::bwd_wmma_launcher(
+    //    static_cast<const float*>(grad_output),
+    //    static_cast<const float*>(A),
+    //    static_cast<const float*>(Wa),
+    //    J0,
+    //    J1,
+    //    static_cast<const float*>(Wo),
+    //    static_cast<const float*>(bump_history),
+    //    static_cast<const float*>(r_init),
+    //    static_cast<float*>(grad_Wa),
+    //    static_cast<float*>(grad_Wo),
+    //    alpha, N, a_dim, seq_len, batch_size, activation_type
+    // );
+    // CHECK_CUDA_ERROR(cudaGetLastError());
+
     cuda_wmma::bwd_wmma_launcher(
        static_cast<const float*>(grad_output),
        static_cast<const float*>(A),
@@ -62,11 +80,14 @@ void bwd_cuda(
        J1,
        static_cast<const float*>(Wo),
        static_cast<const float*>(bump_history),
+       static_cast<const float*>(r_init),
        static_cast<float*>(grad_Wa),
        static_cast<float*>(grad_Wo),
        alpha, N, a_dim, seq_len, batch_size, activation_type
     );
     CHECK_CUDA_ERROR(cudaGetLastError());
+
+
 }
 
 // int main(int argc, char** argv) {
@@ -131,53 +152,69 @@ void bwd_cuda(
 //         cfg.alpha, cfg.N, cfg.a_dim, cfg.seq_len, cfg.batch_size, cfg.activation_type
 //     );
 //     CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+//     //
+//     // cuda_simple::bwd_fp32_launcher(
+//     //     d_grad_output.data().get(), d_A.data().get(), d_Wa.data().get(),
+//     //     cfg.J0, cfg.J1, d_Wo.data().get(), d_bump_history.data().get(),
+//     //     d_grad_Wa_wmma.data().get(), d_grad_Wo_wmma.data().get(),
+//     //     cfg.alpha, cfg.N, cfg.a_dim, cfg.seq_len, cfg.batch_size, cfg.activation_type
+//     // );
+//     // CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+//
+//     // cuda_single::bwd_wmma_launcher(
+//     //     d_grad_output.data().get(), d_A.data().get(), d_Wa.data().get(),
+//     //     cfg.J0, cfg.J1, d_Wo.data().get(), d_bump_history.data().get(),
+//     //     d_grad_Wa_wmma.data().get(), d_grad_Wo_wmma.data().get(),
+//     //     cfg.alpha, cfg.N, cfg.a_dim, cfg.seq_len, cfg.batch_size, cfg.activation_type
+//     // );
+//     // CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 //
 //
-//     // ---------------------------------------------------------------
-//     // Check correctness
-//     // ---------------------------------------------------------------
-//     if (cfg.run_check) {
-//         cuda_fp32::bwd_fp32_launcher(
-//             d_grad_output.data().get(), d_A.data().get(), d_Wa.data().get(),
-//             cfg.J0, cfg.J1, d_Wo.data().get(), d_bump_history.data().get(),
-//             d_grad_Wa_fp32.data().get(), d_grad_Wo_fp32.data().get(),
-//             cfg.alpha, cfg.N, cfg.a_dim, cfg.seq_len, cfg.batch_size, cfg.activation_type
-//         );
-//         CHECK_CUDA_ERROR(cudaDeviceSynchronize());
-//
-//         std::vector<float> grad_Wa_fp32(Wa_size), grad_Wo_fp32(Wo_size);
-//         std::vector<float> grad_Wa_wmma(Wa_size), grad_Wo_wmma(Wo_size);
-//
-//         CHECK_CUDA_ERROR(cudaMemcpy(grad_Wa_fp32.data(), d_grad_Wa_fp32.data().get(), Wa_size * sizeof(float), cudaMemcpyDeviceToHost));
-//         CHECK_CUDA_ERROR(cudaMemcpy(grad_Wo_fp32.data(), d_grad_Wo_fp32.data().get(), Wo_size * sizeof(float), cudaMemcpyDeviceToHost));
-//         CHECK_CUDA_ERROR(cudaMemcpy(grad_Wa_wmma.data(), d_grad_Wa_wmma.data().get(), Wa_size * sizeof(float), cudaMemcpyDeviceToHost));
-//         CHECK_CUDA_ERROR(cudaMemcpy(grad_Wo_wmma.data(), d_grad_Wo_wmma.data().get(), Wo_size * sizeof(float), cudaMemcpyDeviceToHost));
-//
-//         printf("Checking grad_Wa correctness:\n");
-//         bool wa_correct = allClose(grad_Wa_fp32, grad_Wa_wmma, 0.00001f, 0.000001f, 10);
-//         printf("\nChecking grad_Wo correctness:\n");
-//         bool wo_correct = allClose(grad_Wo_fp32, grad_Wo_wmma, 0.00001f, 0.000001f, 10);
-//         printf("\n%s\n\n", (wa_correct && wo_correct) ? "Correctness check PASSED" : "Correctness check FAILED");
-//     }
-//
-//     // ---------------------------------------------------------------
-//     // Benchmarking
-//     // ---------------------------------------------------------------
-//     if (cfg.run_benchmark) {
-//         benchmark_launcher("FP32 Kernel", cuda_fp32::bwd_fp32_launcher, cfg.timing_iterations,
-//             d_grad_output.data().get(), d_A.data().get(), d_Wa.data().get(),
-//             cfg.J0, cfg.J1, d_Wo.data().get(), d_bump_history.data().get(),
-//             d_grad_Wa_fp32.data().get(), d_grad_Wo_fp32.data().get(),
-//             cfg.alpha, cfg.N, cfg.a_dim, cfg.seq_len, cfg.batch_size, cfg.activation_type
-//         );
-//
-//         benchmark_launcher("WMMA Kernel", cuda_wmma::bwd_wmma_launcher, cfg.timing_iterations,
-//             d_grad_output.data().get(), d_A.data().get(), d_Wa.data().get(),
-//             cfg.J0, cfg.J1, d_Wo.data().get(), d_bump_history.data().get(),
-//             d_grad_Wa_wmma.data().get(), d_grad_Wo_wmma.data().get(),
-//             cfg.alpha, cfg.N, cfg.a_dim, cfg.seq_len, cfg.batch_size, cfg.activation_type
-//         );
-//     }
+//     // // ---------------------------------------------------------------
+//     // // Check correctness
+//     // // ---------------------------------------------------------------
+//     // if (cfg.run_check) {
+//     //     cuda_simple::bwd_fp32_launcher(
+//     //         d_grad_output.data().get(), d_A.data().get(), d_Wa.data().get(),
+//     //         cfg.J0, cfg.J1, d_Wo.data().get(), d_bump_history.data().get(),
+//     //         d_grad_Wa_fp32.data().get(), d_grad_Wo_fp32.data().get(),
+//     //         cfg.alpha, cfg.N, cfg.a_dim, cfg.seq_len, cfg.batch_size, cfg.activation_type
+//     //     );
+//     //     CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+//     //
+//     //     std::vector<float> grad_Wa_fp32(Wa_size), grad_Wo_fp32(Wo_size);
+//     //     std::vector<float> grad_Wa_wmma(Wa_size), grad_Wo_wmma(Wo_size);
+//     //
+//     //     CHECK_CUDA_ERROR(cudaMemcpy(grad_Wa_fp32.data(), d_grad_Wa_fp32.data().get(), Wa_size * sizeof(float), cudaMemcpyDeviceToHost));
+//     //     CHECK_CUDA_ERROR(cudaMemcpy(grad_Wo_fp32.data(), d_grad_Wo_fp32.data().get(), Wo_size * sizeof(float), cudaMemcpyDeviceToHost));
+//     //     CHECK_CUDA_ERROR(cudaMemcpy(grad_Wa_wmma.data(), d_grad_Wa_wmma.data().get(), Wa_size * sizeof(float), cudaMemcpyDeviceToHost));
+//     //     CHECK_CUDA_ERROR(cudaMemcpy(grad_Wo_wmma.data(), d_grad_Wo_wmma.data().get(), Wo_size * sizeof(float), cudaMemcpyDeviceToHost));
+//     //
+//     //     printf("Checking grad_Wa correctness:\n");
+//     //     bool wa_correct = allClose(grad_Wa_fp32, grad_Wa_wmma, 0.00001f, 0.000001f, 10);
+//     //     printf("\nChecking grad_Wo correctness:\n");
+//     //     bool wo_correct = allClose(grad_Wo_fp32, grad_Wo_wmma, 0.00001f, 0.000001f, 10);
+//     //     printf("\n%s\n\n", (wa_correct && wo_correct) ? "Correctness check PASSED" : "Correctness check FAILED");
+//     // }
+//     //
+//     // // ---------------------------------------------------------------
+//     // // Benchmarking
+//     // // ---------------------------------------------------------------
+//     // if (cfg.run_benchmark) {
+//     //     benchmark_launcher("FP32 Kernel", cuda_fp32::bwd_fp32_launcher, cfg.timing_iterations,
+//     //         d_grad_output.data().get(), d_A.data().get(), d_Wa.data().get(),
+//     //         cfg.J0, cfg.J1, d_Wo.data().get(), d_bump_history.data().get(),
+//     //         d_grad_Wa_fp32.data().get(), d_grad_Wo_fp32.data().get(),
+//     //         cfg.alpha, cfg.N, cfg.a_dim, cfg.seq_len, cfg.batch_size, cfg.activation_type
+//     //     );
+//     //
+//     //     benchmark_launcher("WMMA Kernel", cuda_wmma::bwd_wmma_launcher, cfg.timing_iterations,
+//     //         d_grad_output.data().get(), d_A.data().get(), d_Wa.data().get(),
+//     //         cfg.J0, cfg.J1, d_Wo.data().get(), d_bump_history.data().get(),
+//     //         d_grad_Wa_wmma.data().get(), d_grad_Wo_wmma.data().get(),
+//     //         cfg.alpha, cfg.N, cfg.a_dim, cfg.seq_len, cfg.batch_size, cfg.activation_type
+//     //     );
+//     // }
 //
 //     return 0;
 // }

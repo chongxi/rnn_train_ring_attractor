@@ -10,6 +10,7 @@ void bwd_cuda(
     float J1,
     void* Wo,
     void* bump_history,
+    void* r_init,
     void* grad_Wa,
     void* grad_Wo,
     float alpha,
@@ -28,6 +29,7 @@ void bwd(
     float J1,
     const at::Tensor& Wo,
     const at::Tensor& bump_history,
+    const at::Tensor& r_init,
     at::Tensor& grad_Wa,
     at::Tensor& grad_Wo,
     float alpha,
@@ -38,6 +40,7 @@ void bwd(
     TORCH_CHECK(Wa.is_contiguous(), "Wa must be contiguous");
     TORCH_CHECK(Wo.is_contiguous(), "Wo must be contiguous");
     TORCH_CHECK(bump_history.is_contiguous(), "bump_history must be contiguous");
+    TORCH_CHECK(r_init.is_contiguous(), "r_init must be contiguous");
     TORCH_CHECK(grad_Wa.is_contiguous(), "grad_Wa must be contiguous");
     TORCH_CHECK(grad_Wo.is_contiguous(), "grad_Wo must be contiguous");
 
@@ -53,6 +56,7 @@ void bwd(
         J1,
         Wo.data_ptr(),
         bump_history.data_ptr(),
+        r_init.data_ptr(),
         grad_Wa.data_ptr(),
         grad_Wo.data_ptr(),
         alpha, N, a_dim, seq_len, batch_size, activation_type
@@ -68,6 +72,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
           py::arg("J1"),
           py::arg("Wo"),
           py::arg("bump_history"),
+          py::arg("r_init"),
           py::arg("grad_Wa"),
           py::arg("grad_Wo"),
           py::arg("alpha"),

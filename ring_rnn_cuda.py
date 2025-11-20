@@ -79,14 +79,16 @@ class RingRnnCudaFunc(Function):
             activation_type,
         )
 
-        ctx.save_for_backward(action_signal, Wa, J0, Wo, bump_history)
+        ctx.save_for_backward(action_signal, Wa, Wo, bump_history)
+        ctx.J0 = J0
         ctx.J1 = J1
         ctx.alpha = alpha
-        ctx.activation_name = activation_type
+        ctx.activation_type = activation_type
 
         return bump_history[1:, :, :]
     @staticmethod
     def backward(ctx, grad_bump_history):
+        print("grad_output.shape: ", grad_bump_history.shape)
         action_signal, Wa, Wo, bump_history = ctx.saved_tensors
         J0 = ctx.J0
         J1 = ctx.J1
