@@ -50,8 +50,8 @@ namespace cuda_wmma {
     // ---------------------------------------------------------------
     template<Activation ACT, int BM, int BN, int BK, int WMMA_M, int WMMA_N, int WMMA_K>
     __global__ void __launch_bounds__((BN / WMMA_N) * WARPSIZE * (BM / WMMA_M)) recompute_Weff_re_grad_re_kernel(
-        const float* A,               // [B, S, A_dim]   (float → cast to half)
-        const float* Wa,              // [A_dim, N, N]   (float → cast to half)
+        const float* A,               // [B, S, A_dim]   (float → cast to bfloat16)
+        const float* Wa,              // [A_dim, N, N]   (float → cast to bfloat16)
         float J0,
         float J1,
         const float* Wo,              // [N, N]
@@ -101,8 +101,8 @@ namespace cuda_wmma {
         constexpr int lda = ld;
         constexpr int ldb = ld;
 
-        __shared__ half tileA[BM][ld];
-        __shared__ half tileB[BN][ld];
+        __shared__ nv_bfloat16 tileA[BM][ld];
+        __shared__ nv_bfloat16 tileB[BN][ld];
 
         wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, float> frag_re;
         wmma::fill_fragment(frag_re, 0.f);
@@ -131,10 +131,10 @@ namespace cuda_wmma {
                             const float* src_ptr = &A_idx.at(global_m, t, global_k);
                             float4 data = *reinterpret_cast<const float4*>(src_ptr);
 
-                            tileA[load_m][load_k_base] = __float2half(data.x);
-                            tileA[load_m][load_k_base + 1] = __float2half(data.y);
-                            tileA[load_m][load_k_base + 2] = __float2half(data.z);
-                            tileA[load_m][load_k_base + 3] = __float2half(data.w);
+                            tileA[load_m][load_k_base] = __float2bfloat16(data.x);
+                            tileA[load_m][load_k_base + 1] = __float2bfloat16(data.y);
+                            tileA[load_m][load_k_base + 2] = __float2bfloat16(data.z);
+                            tileA[load_m][load_k_base + 3] = __float2bfloat16(data.w);
 
                             // Convert to BF16 and store
                             __nv_bfloat16* a_dest = &A_t_temp[global_m * a_dim + global_k];
@@ -143,10 +143,10 @@ namespace cuda_wmma {
                             a_dest[2] = __float2bfloat16(data.z);
                             a_dest[3] = __float2bfloat16(data.w);
                         } else {
-                            tileA[load_m][load_k_base] = __float2half(0.f);
-                            tileA[load_m][load_k_base + 1] = __float2half(0.f);
-                            tileA[load_m][load_k_base + 2] = __float2half(0.f);
-                            tileA[load_m][load_k_base + 3] = __float2half(0.f);
+                            tileA[load_m][load_k_base] = __float2bfloat16(0.f);
+                            tileA[load_m][load_k_base + 1] = __float2bfloat16(0.f);
+                            tileA[load_m][load_k_base + 2] = __float2bfloat16(0.f);
+                            tileA[load_m][load_k_base + 3] = __float2bfloat16(0.f);
                         }
                     }
                 }
@@ -167,19 +167,19 @@ namespace cuda_wmma {
                             const float* src_ptr = &Wa_idx.at(global_k, global_Non, global_n);
                             float2 data = *reinterpret_cast<const float2*>(src_ptr);
 
-                            tileB[load_n_base][load_k] = __float2half(data.x);
-                            tileB[load_n_base + 1][load_k] = __float2half(data.y);
+                            tileB[load_n_base][load_k] = __float2bfloat16(data.x);
+                            tileB[load_n_base + 1][load_k] = __float2bfloat16(data.y);
                         } else {
-                            tileB[load_n_base][load_k] = __float2half(0.f);
-                            tileB[load_n_base + 1][load_k] = __float2half(0.f);
+                            tileB[load_n_base][load_k] = __float2bfloat16(0.f);
+                            tileB[load_n_base + 1][load_k] = __float2bfloat16(0.f);
                         }
                     }
                 }
 
                 __syncthreads();
 
-                wmma::fragment<wmma::matrix_a, WMMA_M, WMMA_N, WMMA_K, half, wmma::row_major> frag_a;
-                wmma::fragment<wmma::matrix_b, WMMA_M, WMMA_N, WMMA_K, half, wmma::col_major> frag_b;
+                wmma::fragment<wmma::matrix_a, WMMA_M, WMMA_N, WMMA_K, nv_bfloat16, wmma::row_major> frag_a;
+                wmma::fragment<wmma::matrix_b, WMMA_M, WMMA_N, WMMA_K, nv_bfloat16, wmma::col_major> frag_b;
 
     #pragma unroll
                 for (int mma_k = 0; mma_k < BK; mma_k += WMMA_K) {

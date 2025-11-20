@@ -339,7 +339,7 @@ namespace fwd_mixed {
         int batch_size,
         int activation_type
     ){
-        constexpr bool use_bf16 = false;
+        constexpr bool use_bf16 = true;
         if (use_bf16) {
             switch(activation_type){
                 case 0: fwd_wmma_impl<Activation::RELU, nv_bfloat16>(A, Wa, J0, J1, Wo, r_init, bump_history, alpha, N, a_dim, seq_len, batch_size); break;
