@@ -235,7 +235,7 @@ def run_training_and_evaluation(action_dim=2):
     print("Note: This model has NO gain networks - using raw action signals directly")
 
     # --- Training Parameters ---
-    num_neurons = 512
+    num_neurons = 256
     training_steps = 1000
     learning_rate = 1e-3
     batch_size = 128
