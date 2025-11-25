@@ -40,7 +40,8 @@ namespace fwd_mixed {
                     // size_t rowData = regBlockRow * 8 + groupID_in_warp;
                     size_t colData = regBlockCol * 8 + threadID_in_group * 2 + i;
 
-                    frag_Wa_weighted.x[regID] = J0 + J1 * Wo[colData] + frag_Wa_weighted.x[regID];
+                    frag_Wa_weighted.x[regID] = frag_Wa_weighted.x[regID] = fmaf(J1, Wo[colData], J0 + frag_Wa_weighted.x[regID]);
+                    // frag_Wa_weighted.x[regID] = J1 * Wo[colData] + J0 + frag_Wa_weighted.x[regID];
                 }
             }
         }
@@ -53,7 +54,7 @@ namespace fwd_mixed {
         float J0,
         float J1,
         const float* Wo, //[n_neur, n_neur] = [128, 128] TODO: Make Wo persistent in L2 cache. REVIEW: already fits inside L2
-        const float* r_init, // [batch_size, n_neur] = [256, 128]
+        const float* r_prev, // [batch_size, n_neur] = [256, 128]
         float* bump_history, // [batch_size, seq_len, n_neur] -> [seq_len, batch_size, n_neur] = [10, 256, 128]
         float alpha,
         int n_neur,
@@ -65,7 +66,7 @@ namespace fwd_mixed {
         IndexWrapper<const float, 3> A_idx(A, batch_size, seq_len, a_dim);
         IndexWrapper<const float, 3> Wa_idx(Wa, a_dim, n_neur, n_neur);
         IndexWrapper<const float, 2> Wo_idx(Wo, n_neur, n_neur);
-        IndexWrapper<const float, 2> r_init_idx(r_init, batch_size, n_neur);
+        IndexWrapper<const float, 2> r_prev_idx(r_prev, batch_size, n_neur);
         IndexWrapper<float, 3> bump_history_idx(bump_history, seq_len, batch_size, n_neur);
 
         // constexpr int group_size = 16;
@@ -183,10 +184,7 @@ namespace fwd_mixed {
             //============================= Step 3: Load r[BM, BN] tile and perform partial sum ============================
             int frag_m = global_m_base + warp_idx_y * WMMA_M;
             if (frag_m < batch_size && frag_n < n_neur) {
-                const float* pos_frag_r = is_first ?
-                    &r_init_idx.at(frag_m, frag_n) :
-                    &bump_history_idx.at(t - 1, frag_m, frag_n);
-
+                const float* pos_frag_r = &r_prev_idx.at(frag_m, frag_n);
                 wmma::load_matrix_sync(frag_r, pos_frag_r, n_neur, wmma::mem_row_major);
 
                 for (size_t i = 0; i < frag_r.num_elements; ++i) {
@@ -233,9 +231,7 @@ namespace fwd_mixed {
         if (cta.thread_rank() < BM) {
             int global_m = global_m_base + cta.thread_rank();
             if (global_m < batch_size && global_n_neuron < n_neur) {
-                float r_prev = is_first ?
-                    r_init_idx.at(global_m, global_n_neuron) :
-                    bump_history_idx.at(t - 1, global_m, global_n_neuron);
+                float r_prev = r_prev_idx.at(global_m, global_n_neuron);
                 float r_updated = (1 - alpha) * r_prev + alpha * activation<ACT>(re_temp[cta.thread_rank()][0]);
                 bump_history_idx.at(t, global_m, global_n_neuron) = r_updated;
             }
@@ -298,12 +294,14 @@ namespace fwd_mixed {
         dim3 gridSize(N, (batch_size + BM - 1) / BM);
 
         for (int t = 0; t < seq_len; ++t){
+            // const float* r_prev = (t == 0) ? r_init : (bump_history + (t - 1) * batch_size * N);
+            float* r_prev = (t == 0) ? static_cast<float*>(r_init) : (static_cast<float*>(bump_history) + (t - 1) * batch_size * N);
             fwd_wmma_kernel<ACT, BM, BN, BK, WMMA_M, WMMA_N, WMMA_K, T><<<gridSize, blockSize>>>(
                 static_cast<const float*>(A),
                 static_cast<const float*>(Wa),
                 J0, J1,
                 static_cast<const float*>(Wo),
-                static_cast<const float*>(r_init),
+                r_prev,
                 static_cast<float*>(bump_history),
                 alpha, N, a_dim, seq_len, t, batch_size
             );

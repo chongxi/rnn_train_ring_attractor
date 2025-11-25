@@ -108,19 +108,43 @@ class RingRnnCudaFunc(Function):
             raise ValueError(f"Invalid activation '{activation_name}'. Must be one of {list(activation_map.keys())}.")
         activation_type = activation_map[activation_name]
 
+        recurrent_input_history_dummy = torch.empty(1, device=grad_output.device, dtype=torch.bfloat16)
+
+        # Workspace buffers - use empty since they're completely overwritten
+        grad_r = torch.zeros(batch_size, N, device=grad_output.device, dtype=grad_output.dtype)
+        W_eff_temp = torch.empty(batch_size, N, N, device=grad_output.device, dtype=grad_output.dtype)
+        grad_re_temp = torch.empty(batch_size, N, device=grad_output.device, dtype=grad_output.dtype)
+        grad_W_eff_temp_bf16 = torch.empty(batch_size, N, N, device=grad_output.device, dtype=torch.bfloat16)
+        A_t_temp_bf16 = torch.empty(batch_size, a_dim, device=grad_output.device, dtype=torch.bfloat16)
+        grad_re_temp_T = torch.empty(batch_size, N, device=grad_output.device, dtype=grad_output.dtype)  # NEW: added this buffer
+
+        grad_output_ctg = grad_output.contiguous()
+
+        handle = torch.cuda.current_blas_handle()
+
         bwd_cuda.bwd(
-            grad_output=grad_output.contiguous(),
+            grad_output=grad_output_ctg,
             A=action_signal,
             Wa=Wa,
             J0=J0,
             J1=J1,
             Wo=Wo,
             bump_history=bump_history,
+            re_history=recurrent_input_history_dummy,
             r_init=r_init,
             grad_Wa=grad_Wa,
             grad_Wo=grad_Wo,
             alpha=alpha,
-            activation_type=activation_type
+            activation_type=activation_type,
+            # Workspace buffers
+            grad_r=grad_r,
+            W_eff_temp=W_eff_temp,
+            grad_re_temp=grad_re_temp,
+            grad_W_eff_temp_bf16=grad_W_eff_temp_bf16,
+            A_t_temp_bf16=A_t_temp_bf16,
+            grad_re_temp_T=grad_re_temp_T,  # NEW: added this parameter
+            cublas_handle=handle
         )
+
         return None, grad_Wa, None, None, grad_Wo, None, None, None
 

@@ -5,6 +5,7 @@ cpp/CMakeLists.txt
 cpp/cmake-build-debug
 cpp/cmake-build-release
 build
+*.nsys-rep
 
 **/__pycache__/
 .vscode/

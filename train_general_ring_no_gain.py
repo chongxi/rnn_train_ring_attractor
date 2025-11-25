@@ -187,13 +187,44 @@ def av_to_action_signal(av_signal):
 
     return action_signal
 
-def av_to_action_signal_ND(av_signal, action_dim=16):
+# def av_to_action_signal_ND(av_signal, action_dim=16):
+#     """
+#     Convert angular velocity signal to n-dimensional action signals.
+#     Returns action vector of shape [batch_size, seq_len, action_dim].
+#     """
+#     scales = torch.linspace(-1, 1, action_dim, device=av_signal.device, dtype=av_signal.dtype)
+#     action_signal = torch.relu(av_signal.unsqueeze(-1) * scales)
+#
+#     return action_signal
+
+def av_to_action_signal_ND(av_signal, action_dim=16, zero_padding=True):
     """
     Convert angular velocity signal to n-dimensional action signals.
     Returns action vector of shape [batch_size, seq_len, action_dim].
+
+    Args:
+        av_signal: (batch_size, seq_len) angular velocity signal
+        action_dim: number of action dimensions
+        zero_padding: if True, only use first 2 dimensions for L/R and zero out rest.
+                      if False, distribute across all dimensions with scaling.
     """
-    scales = torch.linspace(-1, 1, action_dim, device=av_signal.device, dtype=av_signal.dtype)
-    action_signal = torch.relu(av_signal.unsqueeze(-1) * scales)
+    if zero_padding:
+        # Classic L/R setup: only first 2 dimensions, rest are zeros
+        batch_size, seq_len = av_signal.shape
+        action_signal = torch.zeros(batch_size, seq_len, action_dim,
+                                    device=av_signal.device, dtype=av_signal.dtype)
+
+        # First dimension: Left turn (negative velocities)
+        action_signal[:, :, 0] = torch.relu(-av_signal)
+
+        # Second dimension: Right turn (positive velocities)
+        action_signal[:, :, 1] = torch.relu(av_signal)
+
+        # Dimensions 2 onwards remain zero
+    else:
+        # Original behavior: distribute across all dimensions
+        scales = torch.linspace(-1, 1, action_dim, device=av_signal.device, dtype=av_signal.dtype)
+        action_signal = torch.relu(av_signal.unsqueeze(-1) * scales)
 
     return action_signal
 

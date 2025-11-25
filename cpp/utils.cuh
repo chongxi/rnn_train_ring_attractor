@@ -2,9 +2,9 @@
 
 struct Config {
     int N = 512;
-    int a_dim = 32;
-    int seq_len = 4;
-    int batch_size = 64;
+    int a_dim = 16;
+    int seq_len = 1;
+    int batch_size = 128;
     int activation_type = 3;
     float J0 = 1.0f;
     float J1 = 0.5f;

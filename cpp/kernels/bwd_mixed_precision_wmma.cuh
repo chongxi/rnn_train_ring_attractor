@@ -39,7 +39,7 @@ namespace cuda_wmma {
                     // size_t rowData = regBlockRow * 8 + groupID_in_warp;
                     size_t colData = regBlockCol * 8 + threadID_in_group * 2 + i;
 
-                    frag_Wa_weighted.x[regID] = J0 + J1 * Wo[colData] + frag_Wa_weighted.x[regID];
+                    frag_Wa_weighted.x[regID] = frag_Wa_weighted.x[regID] = fmaf(J1, Wo[colData], J0 + frag_Wa_weighted.x[regID]);
                 }
             }
         }

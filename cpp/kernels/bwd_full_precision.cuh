@@ -432,7 +432,7 @@ namespace cuda_single {
         cudaFree(A_t_temp);
     }
 
-    void bwd_wmma_launcher(
+    void bwd_single_launcher(
         const float* grad_output,
         const float* A,
         const float* Wa,

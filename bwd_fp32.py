@@ -1,9 +1,14 @@
 import torch
 from torch.autograd import Function
 from utils.benchmark import *
+
 from rnn_cuda import bwd_cuda, fwd_cuda
 
-from ring_rnn_cuda import ring_rnn_cuda_func
+# import build.fwd as fwd_cuda #type: ignore
+# import build.bwd as bwd_cuda #type: ignore
+
+
+# from ring_rnn_cuda import ring_rnn_cuda_func
 
 import torch
 from torch.autograd import Function
@@ -145,44 +150,126 @@ class CalcBumpFunction_permute_re(Function):
         batch_size, seq_len, a_dim = action_signal.shape
         N = Wa.shape[1]
 
+        # Gradient outputs - must be zeros since we accumulate into them
         grad_Wa = torch.zeros_like(Wa)
         grad_Wo = torch.zeros_like(Wo)
 
-        grad_r_next = torch.zeros(batch_size, N, device=grad_output.device, dtype=grad_output.dtype)
+        # # Workspace buffers - use empty since they're completely overwritten
+        grad_r = torch.zeros(batch_size, N, device=grad_output.device, dtype=grad_output.dtype)
+        W_eff_temp = torch.empty(batch_size, N, N, device=grad_output.device, dtype=grad_output.dtype)
+        grad_re_temp = torch.empty(batch_size, N, device=grad_output.device, dtype=grad_output.dtype)
+        grad_W_eff_temp_bf16 = torch.empty(batch_size, N, N, device=grad_output.device, dtype=torch.bfloat16)
+        A_t_temp_bf16 = torch.empty(batch_size, a_dim, device=grad_output.device, dtype=torch.bfloat16)
 
-        for t in reversed(range(seq_len)):
-            if t == 0:
-                r_prev = r_init
-            else:
-                r_prev = bump_history[t - 1]
+        activation_map = {'relu': 0, 'gelu': 1, 'tanh': 2, 'silu': 3}
+        if activation_name not in activation_map:
+            raise ValueError(f"Invalid activation '{activation_name}'. Must be one of {list(activation_map.keys())}.")
+        activation_type = activation_map[activation_name]
 
-            recurrent_input = recurrent_input_history[t]
+        grad_output_ctg = grad_output.contiguous()
 
-            A_t = action_signal[:, t, :]
-            Wa_flat = Wa.view(a_dim, N * N)
-            Wa_weighted = torch.matmul(A_t, Wa_flat).view(batch_size, N, N)
-            W_eff = J0 + J1 * Wo + Wa_weighted
+        handle = torch.cuda.current_blas_handle()
 
-            grad_r_current = grad_output[t] + grad_r_next
-
-            activation_derivative = non_linear_derivative(recurrent_input, activation_name)
-            grad_recurrent_input = activation_derivative * grad_r_current * alpha
-
-            grad_W_eff = torch.bmm(
-                grad_recurrent_input.unsqueeze(2),
-                r_prev.unsqueeze(1)
-            )
-
-            grad_Wo = grad_Wo + J1 * grad_W_eff.sum(dim=0)
-
-            grad_Wa_weighted_flat = grad_W_eff.view(batch_size, N * N)
-            grad_Wa_flat = torch.matmul(A_t.t(), grad_Wa_weighted_flat)
-            grad_Wa = grad_Wa + grad_Wa_flat.view(a_dim, N, N)
-
-            grad_r_from_recurrent = (W_eff.transpose(1, 2) @ grad_recurrent_input.unsqueeze(2)).squeeze(2)
-            grad_r_next = grad_r_from_recurrent + grad_r_current * (1 - alpha)
+        bwd_cuda.bwd(
+            grad_output=grad_output_ctg,
+            A=action_signal,
+            Wa=Wa,
+            J0=J0,
+            J1=J1,
+            Wo=Wo,
+            bump_history=bump_history,
+            re_history=recurrent_input_history,
+            r_init=r_init,
+            grad_Wa=grad_Wa,
+            grad_Wo=grad_Wo,
+            alpha=alpha,
+            activation_type=activation_type,
+            # Workspace buffers
+            grad_r=grad_r,
+            W_eff_temp=W_eff_temp,
+            grad_re_temp=grad_re_temp,
+            grad_W_eff_temp_bf16=grad_W_eff_temp_bf16,
+            A_t_temp_bf16=A_t_temp_bf16,
+            cublas_handle=handle
+        )
 
         return None, grad_Wa, None, None, grad_Wo, None, None, None
+
+        # for t in reversed(range(seq_len)):
+        #     if t == 0:
+        #         r_prev = r_init
+        #     else:
+        #         r_prev = bump_history[t - 1]
+        #
+        #     A_t = action_signal[:, t, :]
+        #
+        #
+        #     # Accumulate gradient from output
+        #     grad_r = grad_r + grad_output[t]
+        #
+        #     # Compute gradient through activation
+        #     recurrent_input = recurrent_input_history[t]
+        #     activation_derivative = non_linear_derivative(recurrent_input, activation_name)
+        #     grad_recurrent_input = activation_derivative * grad_r * alpha
+        #
+        #     # Gradient w.r.t. W_eff
+        #     grad_W_eff = torch.bmm(
+        #         grad_recurrent_input.unsqueeze(2),
+        #         r_prev.unsqueeze(1)
+        #     )
+        #
+        #     # Gradient w.r.t. Wo
+        #     grad_Wo = grad_Wo + J1 * grad_W_eff.sum(dim=0)
+        #
+        #     # Gradient w.r.t. Wa
+        #     grad_Wa_weighted_flat = grad_W_eff.view(batch_size, N * N)
+        #     grad_Wa_flat = torch.matmul(A_t.t(), grad_Wa_weighted_flat)
+        #     grad_Wa = grad_Wa + grad_Wa_flat.view(a_dim, N, N)
+        #
+        #     # Gradient w.r.t. r (for next iteration)
+        #     Wa_flat = Wa.view(a_dim, N * N)
+        #     Wa_weighted = torch.matmul(A_t, Wa_flat).view(batch_size, N, N)
+        #     W_eff = J0 + J1 * Wo + Wa_weighted
+        #     grad_r_from_recurrent = (W_eff.transpose(1, 2) @ grad_recurrent_input.unsqueeze(2)).squeeze(2)
+        #     grad_r = grad_r_from_recurrent + grad_r * (1 - alpha)
+        #
+        # return None, grad_Wa, None, None, grad_Wo, None, None, None
+
+        # for t in reversed(range(seq_len)):
+        #     if t == 0:
+        #         r_prev = r_init
+        #     else:
+        #         r_prev = bump_history[t - 1]
+        #
+        #     A_t = action_signal[:, t, :]
+        #
+        #     # Step 1: Compute grad_recurrent_input (grad_re)
+        #     grad_r_current = grad_r + grad_output[t]
+        #     recurrent_input = recurrent_input_history[t]
+        #     activation_derivative = non_linear_derivative(recurrent_input, activation_name)
+        #     grad_recurrent_input = activation_derivative * grad_r_current * alpha
+        #
+        #     # Step 2: Weight gradients (can overlap with W_eff computation)
+        #     grad_W_eff = torch.bmm(
+        #         grad_recurrent_input.unsqueeze(2),
+        #         r_prev.unsqueeze(1)
+        #     )
+        #     grad_Wo = grad_Wo + J1 * grad_W_eff.sum(dim=0)
+        #
+        #     grad_Wa_weighted_flat = grad_W_eff.view(batch_size, N * N)
+        #     grad_Wa_flat = torch.matmul(A_t.t(), grad_Wa_weighted_flat)
+        #     grad_Wa = grad_Wa + grad_Wa_flat.view(a_dim, N, N)
+        #
+        #     # Step 3: Compute W_eff (only needed for grad_r update)
+        #     Wa_flat = Wa.view(a_dim, N * N)
+        #     Wa_weighted = torch.matmul(A_t, Wa_flat).view(batch_size, N, N)
+        #     W_eff = J0 + J1 * Wo + Wa_weighted
+        #
+        #     # Step 4: Update grad_r for next iteration
+        #     grad_r_from_recurrent = (W_eff.transpose(1, 2) @ grad_recurrent_input.unsqueeze(2)).squeeze(2)
+        #     grad_r = grad_r_from_recurrent + grad_r_current * (1 - alpha)
+        #
+        # return None, grad_Wa, None, None, grad_Wo, None, None, None
 
 
 class CalcBumpFunction_permute(Function):
@@ -244,41 +331,51 @@ class CalcBumpFunction_permute(Function):
 
         grad_Wa = torch.zeros_like(Wa)
         grad_Wo = torch.zeros_like(Wo)
-# PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-#     m.def("bwd", &bwd, "bwd (CUDA)",
-#           py::arg("grad_output"),
-# py::arg("A"),
-# py::arg("Wa"),
-# py::arg("J0"),
-# py::arg("J1"),
-# py::arg("Wo"),
-# py::arg("bump_history"),
-# py::arg("r_init"),
-# py::arg("grad_Wa"),
-# py::arg("grad_Wo"),
-# py::arg("alpha"),
-# py::arg("activation_type"));
-# }
 
         activation_map = {'relu': 0, 'gelu': 1, 'tanh': 2, 'silu': 3}
         if activation_name not in activation_map:
             raise ValueError(f"Invalid activation '{activation_name}'. Must be one of {list(activation_map.keys())}.")
         activation_type = activation_map[activation_name]
 
+        recurrent_input_history_dummy = torch.empty(1, device=grad_output.device, dtype=torch.bfloat16)
+
+        # Workspace buffers - use empty since they're completely overwritten
+        grad_r = torch.zeros(batch_size, N, device=grad_output.device, dtype=grad_output.dtype)
+        W_eff_temp = torch.empty(batch_size, N, N, device=grad_output.device, dtype=grad_output.dtype)
+        grad_re_temp = torch.empty(batch_size, N, device=grad_output.device, dtype=grad_output.dtype)
+        grad_W_eff_temp_bf16 = torch.empty(batch_size, N, N, device=grad_output.device, dtype=torch.bfloat16)
+        A_t_temp_bf16 = torch.empty(batch_size, a_dim, device=grad_output.device, dtype=torch.bfloat16)
+        grad_re_temp_T = torch.empty(batch_size, N, device=grad_output.device, dtype=grad_output.dtype)  # NEW: added this buffer
+
+        grad_output_ctg = grad_output.contiguous()
+
+        handle = torch.cuda.current_blas_handle()
+
         bwd_cuda.bwd(
-            grad_output=grad_output.contiguous(),
+            grad_output=grad_output_ctg,
             A=action_signal,
             Wa=Wa,
             J0=J0,
             J1=J1,
             Wo=Wo,
             bump_history=bump_history,
+            re_history=recurrent_input_history_dummy,
             r_init=r_init,
             grad_Wa=grad_Wa,
             grad_Wo=grad_Wo,
             alpha=alpha,
-            activation_type=activation_type
+            activation_type=activation_type,
+            # Workspace buffers
+            grad_r=grad_r,
+            W_eff_temp=W_eff_temp,
+            grad_re_temp=grad_re_temp,
+            grad_W_eff_temp_bf16=grad_W_eff_temp_bf16,
+            A_t_temp_bf16=A_t_temp_bf16,
+            grad_re_temp_T=grad_re_temp_T,  # NEW: added this parameter
+            cublas_handle=handle
         )
+
+        return None, grad_Wa, None, None, grad_Wo, None, None, None
 
         # grad_r = torch.zeros(batch_size, N, device=grad_output.device, dtype=grad_output.dtype)
         #
@@ -314,7 +411,7 @@ class CalcBumpFunction_permute(Function):
         #     grad_r_from_recurrent = (W_eff.transpose(1, 2) @ grad_recurrent_input.unsqueeze(2)).squeeze(2)
         #     grad_r = grad_r_from_recurrent + grad_r * (1 - alpha)
 
-        return None, grad_Wa, None, None, grad_Wo, None, None, None
+        # return None, grad_Wa, None, None, grad_Wo, None, None, None
 
 def non_linear(x, activation_name):
     """Apply activation function."""
@@ -366,7 +463,7 @@ def non_linear_derivative(x, activation_name):
 
 
 
-def calc_bump_impl(action_signal, Wa, J0, J1, Wo, W_delta7, r_init, alpha, activation_name):
+def calc_bump_impl(action_signal, Wa, J0, J1, Wo, r_init, alpha, activation_name):
     """
     Wrapper function using custom autograd.
 
@@ -383,23 +480,9 @@ def calc_bump_impl(action_signal, Wa, J0, J1, Wo, W_delta7, r_init, alpha, activ
     Returns:
         bump_history: (batch_size, seq_len, N)
     """
-    return CalcBumpFunction_permute.apply(
-        action_signal, Wa, J0, J1, Wo, r_init, alpha, activation_name
-    )
+    return CalcBumpFunction_permute.apply(action_signal, Wa, J0, J1, Wo, r_init, alpha, activation_name)
 
-    # bump_history =  CalcBumpFunction_permute.apply(
-    #     action_signal, Wa, J0, J1, Wo, r_init, alpha, activation_name
-    # )
-    #
-    # bump_history = bump_history.permute(1, 0, 2)
-    # r_delta7 = bump_history @ W_delta7
-    # r_max = r_delta7.max(dim=2, keepdim=True)[0]
-    # r_history = r_delta7 / r_max
-    #
-    # return r_history
-
-
-
+    # return CalcBumpFunction_permute_re.apply(action_signal, Wa, J0, J1, Wo, r_init, alpha, activation_name)
 
 def param_prep(num_neurons, a_dim, device='cpu'):
     Wa = torch.randn(a_dim, num_neurons, num_neurons, device=device, requires_grad=True)
@@ -445,7 +528,7 @@ def calc_bump_ref(action_signal, Wa, J0, J1, Wo, r_init, alpha, activation_name)
 
     return torch.stack(bump_history, dim=1)
 
-def calc_bump_permute_ref(action_signal, Wa, J0, J1, Wo, W_delta7, r_init, alpha, activation_name):
+def calc_bump_permute_ref(action_signal, Wa, J0, J1, Wo, r_init, alpha, activation_name):
     """Original calc_bump for reference."""
     batch_size, seq_len, a_dim = action_signal.shape
     N = Wa.shape[1]
@@ -465,13 +548,6 @@ def calc_bump_permute_ref(action_signal, Wa, J0, J1, Wo, W_delta7, r_init, alpha
         bump_history[t, :, :] = r
 
     return bump_history
-
-    # bump_history = bump_history.permute(1, 0, 2)
-    # r_delta7 = bump_history @ W_delta7
-    # r_max = r_delta7.max(dim=2, keepdim=True)[0]
-    # r_history = r_delta7 / r_max
-    #
-    # return r_history
 
 if __name__ == "__main__":
 
@@ -503,11 +579,13 @@ if __name__ == "__main__":
     num_neur = 512
     a_dim = 16
     act = "silu"
-    bs = 64
+    bs = 256
     seq_len = 4
     alpha = 0.15
     device = "cuda"
-
+    is_profiling = True
+    is_benchmarking = True
+    is_check = True
     # num_neur = 8
     # a_dim = 4
     # seq_len = 10
@@ -527,14 +605,14 @@ if __name__ == "__main__":
     action_signal_ref, r_init_ref, _ = input_prep(num_neurons=num_neur, batch_size=bs, a_dim=a_dim, seq_len=seq_len, device=device)
 
 
-    result_impl = calc_bump_impl(action_signal_impl, Wa_impl, J0_impl, J1_impl, Wo_impl, W_delta7_impl, r_init_impl, alpha, act)
+    result_impl = calc_bump_impl(action_signal_impl, Wa_impl, J0_impl, J1_impl, Wo_impl, r_init_impl, alpha, act)
     # result_impl = ring_rnn_cuda_func(action_signal_impl, Wa_impl, J0_impl, J1_impl, Wo_impl, r_init_impl, alpha, act).permute(1, 0, 2)
-    result_ref = calc_bump_permute_ref(action_signal_ref, Wa_ref, J0_ref, J1_ref, Wo_ref, W_delta7_ref, r_init_ref, alpha, act)
+    result_ref = calc_bump_permute_ref(action_signal_ref, Wa_ref, J0_ref, J1_ref, Wo_ref, r_init_ref, alpha, act)
 
 
     gt = torch.randn_like(result_impl, device=device)
     gt_impl = gt.clone().detach()
-    check_tensor_match(tsr_ref=result_ref, tsr_impl=result_impl, name="Forward", max_print=10)
+
 
     criterion = torch.nn.MSELoss()
 
@@ -543,95 +621,121 @@ if __name__ == "__main__":
     grad_Wa_ref = Wa_ref.grad
     grad_Wo_ref = Wo_ref.grad
 
+
+
+    # if is_profiling: torch
     loss_impl = criterion(result_impl, gt_impl)
+
+    # if is_profiling: torch.cuda.nvtx.range_push('backward pass')
+
     loss_impl.backward()
+    # if is_profiling: torch.cuda.nvtx.range_pop()
+
+    # if is_profiling: torch.cuda.nvtx.range_push('dot grad')
     grad_Wa_impl = Wa_impl.grad
     grad_Wo_impl = Wo_impl.grad
+    # if is_profiling: torch.cuda.nvtx.range_pop()
 
-    check_tensor_match(tsr_ref=grad_Wa_ref, tsr_impl=grad_Wa_impl, name="Backward Wa", max_print=10)
-    # check_tensor_match(tsr_ref=grad_Wa_ref, tsr_impl=grad_Wa_impl, name="Backward Wa", atol=1e-2, rtol=1e-3, max_print=10)
-    print("a idx = 0")
-    print("First 10")
-    print("ref : ", grad_Wa_ref[0, 0, :10].cpu().numpy())
-    print("impl: ", grad_Wa_impl[0, 0, :10].cpu().numpy())
-    print("Last 10")
-    print("ref : ", grad_Wa_ref[0, 0, -10:].cpu().numpy())
-    print("impl: ", grad_Wa_impl[0, 0, -10:].cpu().numpy())
-    print("a idx = last")
-    print("First 10")
-    print("ref : ", grad_Wa_ref[-1, 0, :10].cpu().numpy())
-    print("impl: ", grad_Wa_impl[-1, 0, :10].cpu().numpy())
-    print("Last 10")
-    print("ref : ", grad_Wa_ref[-1, 0, -10:].cpu().numpy())
-    print("impl: ", grad_Wa_impl[-1, 0, -10:].cpu().numpy())
 
-    check_tensor_match(tsr_ref=grad_Wo_ref, tsr_impl=grad_Wo_impl, name="Backward Wo", max_print=10)
-    # check_tensor_match(tsr_ref=grad_Wo_ref, tsr_impl=grad_Wo_impl, name="Backward Wo", atol=1e-2, rtol=1e-3, max_print=10)
-    print("N idx=0")
-    print("First 10")
-    print("ref : ", grad_Wo_ref[0, :10].cpu().numpy())
-    print("impl: ", grad_Wo_impl[0, :10].cpu().numpy())
-    print("Last 10")
-    print("ref : ", grad_Wo_ref[0, -10:].cpu().numpy())
-    print("impl: ", grad_Wo_impl[0, -10:].cpu().numpy())
-    print("N idx=last")
-    print("First 10")
-    print("ref : ", grad_Wo_ref[-1, :10].cpu().numpy())
-    print("impl: ", grad_Wo_impl[-1, :10].cpu().numpy())
-    print("Last 10")
-    print("ref : ", grad_Wo_ref[-1, -10:].cpu().numpy())
-    print("impl: ", grad_Wo_impl[-1, -10:].cpu().numpy())
 
-    # # ============ LATENCY BENCHMARKING ============
-    # print("\n" + "="*60)
-    # print("LATENCY BENCHMARKING")
-    # print("="*60)
-    #
-    # # Forward pass latency
-    # print("\n--- Forward Pass ---")
-    # latency_ref_fwd = measure_latency_cuda(
-    #     calc_bump_ref,
-    #     action_signal_ref, Wa_ref, J0_ref, J1_ref,
-    #     Wo_ref, r_init_ref, alpha, act,
-    #     n_warmup=5, n_iters=50
-    # )
-    # print(f"Reference:      {latency_ref_fwd}")
-    #
-    # latency_impl_fwd = measure_latency_cuda(
-    #     calc_bump_impl,
-    #     action_signal_impl, Wa_impl, J0_impl, J1_impl,
-    #     Wo_impl, r_init_impl, alpha, act,
-    #     n_warmup=5, n_iters=50
-    # )
-    # print(f"Implementation: {latency_impl_fwd}")
-    #
-    # # Forward + Backward pass latency
-    # print("\n--- Forward + Backward Pass ---")
-    #
-    # def forward_backward_ref():
-    #     if Wa_ref.grad is not None:
-    #         Wa_ref.grad.zero_()
-    #     if Wo_ref.grad is not None:
-    #         Wo_ref.grad.zero_()
-    #
-    #     result = calc_bump_ref(action_signal_ref, Wa_ref, J0_ref,
-    #                            J1_ref, Wo_ref, r_init_ref, alpha, act)
-    #     loss = criterion(result, gt)
-    #     loss.backward()
-    #
-    # def forward_backward_impl():
-    #     if Wa_impl.grad is not None:
-    #         Wa_impl.grad.zero_()
-    #     if Wo_impl.grad is not None:
-    #         Wo_impl.grad.zero_()
-    #
-    #     result = calc_bump_impl(action_signal_impl, Wa_impl, J0_impl,
-    #                             J1_impl, Wo_impl, r_init_impl, alpha, act)
-    #     loss = criterion(result, gt_impl)
-    #     loss.backward()
-    #
-    # latency_ref_bwd = measure_latency_cuda(forward_backward_ref, n_warmup=5, n_iters=50)
-    # print(f"Reference:      {latency_ref_bwd}")
-    #
-    # latency_impl_bwd = measure_latency_cuda(forward_backward_impl, n_warmup=5, n_iters=50)
-    # print(f"Implementation: {latency_impl_bwd}")
+    if is_check:
+        check_tensor_match(tsr_ref=result_ref, tsr_impl=result_impl, name="Forward", max_print=10)
+        check_tensor_match(tsr_ref=grad_Wa_ref, tsr_impl=grad_Wa_impl, name="Backward Wa", max_print=10)
+        # check_tensor_match(tsr_ref=grad_Wa_ref, tsr_impl=grad_Wa_impl, name="Backward Wa", atol=1e-2, rtol=1e-3, max_print=10)
+        print("a idx = 0")
+        print("First 10")
+        print("ref : ", grad_Wa_ref[0, 0, :10].cpu().numpy())
+        print("impl: ", grad_Wa_impl[0, 0, :10].cpu().numpy())
+        print("Last 10")
+        print("ref : ", grad_Wa_ref[0, 0, -10:].cpu().numpy())
+        print("impl: ", grad_Wa_impl[0, 0, -10:].cpu().numpy())
+        print("a idx = last")
+        print("First 10")
+        print("ref : ", grad_Wa_ref[-1, 0, :10].cpu().numpy())
+        print("impl: ", grad_Wa_impl[-1, 0, :10].cpu().numpy())
+        print("Last 10")
+        print("ref : ", grad_Wa_ref[-1, 0, -10:].cpu().numpy())
+        print("impl: ", grad_Wa_impl[-1, 0, -10:].cpu().numpy())
+
+        check_tensor_match(tsr_ref=grad_Wo_ref, tsr_impl=grad_Wo_impl, name="Backward Wo", max_print=10)
+        # check_tensor_match(tsr_ref=grad_Wo_ref, tsr_impl=grad_Wo_impl, name="Backward Wo", atol=1e-2, rtol=1e-3, max_print=10)
+        print("N idx=0")
+        print("First 10")
+        print("ref : ", grad_Wo_ref[0, :10].cpu().numpy())
+        print("impl: ", grad_Wo_impl[0, :10].cpu().numpy())
+        print("Last 10")
+        print("ref : ", grad_Wo_ref[0, -10:].cpu().numpy())
+        print("impl: ", grad_Wo_impl[0, -10:].cpu().numpy())
+        print("N idx=last")
+        print("First 10")
+        print("ref : ", grad_Wo_ref[-1, :10].cpu().numpy())
+        print("impl: ", grad_Wo_impl[-1, :10].cpu().numpy())
+        print("Last 10")
+        print("ref : ", grad_Wo_ref[-1, -10:].cpu().numpy())
+        print("impl: ", grad_Wo_impl[-1, -10:].cpu().numpy())
+
+    # ============ LATENCY BENCHMARKING ============
+    if is_benchmarking:
+        print("\n" + "="*60)
+        print("LATENCY BENCHMARKING")
+        print("="*60)
+
+        # Forward pass latency
+        print("\n--- Forward Pass ---")
+        latency_ref_fwd = measure_latency_cuda(
+            calc_bump_permute_ref,
+            action_signal_ref, Wa_ref, J0_ref, J1_ref, Wo_ref, r_init_ref, alpha, act,
+            n_warmup=5, n_iters=50
+        )
+        print(f"Reference:      {latency_ref_fwd}")
+
+        latency_impl_fwd = measure_latency_cuda(
+            calc_bump_impl,action_signal_impl, Wa_impl, J0_impl, J1_impl, Wo_impl, r_init_impl, alpha, act,
+            n_warmup=5, n_iters=50
+        )
+        print(f"Implementation: {latency_impl_fwd}")
+
+        # Forward + Backward pass latency
+        print("\n--- Forward + Backward Pass ---")
+
+        def forward_backward_ref():
+            if Wa_ref.grad is not None:
+                Wa_ref.grad.zero_()
+            if Wo_ref.grad is not None:
+                Wo_ref.grad.zero_()
+            if is_profiling: torch.cuda.nvtx.range_push('Fwd ref')
+            result = calc_bump_permute_ref(action_signal_ref, Wa_ref, J0_ref, J1_ref, Wo_ref, r_init_ref, alpha, act)
+            if is_profiling: torch.cuda.nvtx.range_pop()
+
+            loss = criterion(result, gt)
+            # if is_profiling: torch.cuda.nvtx.range_push('Bwd')
+            loss.backward()
+            # if is_profiling: torch.cuda.nvtx.range_pop()
+
+        def forward_backward_impl():
+            if Wa_impl.grad is not None:
+                Wa_impl.grad.zero_()
+            if Wo_impl.grad is not None:
+                Wo_impl.grad.zero_()
+
+            if is_profiling: torch.cuda.nvtx.range_push('Fwd impl')
+            result = calc_bump_impl(action_signal_impl, Wa_impl, J0_impl, J1_impl, Wo_impl, r_init_impl, alpha, act)
+            if is_profiling: torch.cuda.nvtx.range_pop()
+
+            loss = criterion(result, gt_impl)
+            # if is_profiling: torch.cuda.nvtx.range_push('Bwd')
+            loss.backward()
+            # if is_profiling: torch.cuda.nvtx.range_pop()
+        if is_profiling: torch.cuda.cudart().cudaProfilerStart()
+        if is_profiling: torch.cuda.nvtx.range_push('Fwd + Bwd ref')
+        latency_ref_bwd = measure_latency_cuda(forward_backward_ref, n_warmup=1, n_iters=5)
+        if is_profiling: torch.cuda.nvtx.range_pop()
+        print(f"Reference:      {latency_ref_bwd}")
+
+
+        if is_profiling: torch.cuda.nvtx.range_push('Fwd + Bwd impl')
+        latency_impl_bwd = measure_latency_cuda(forward_backward_impl, n_warmup=1, n_iters=5)
+        if is_profiling: torch.cuda.nvtx.range_pop()
+        print(f"Implementation: {latency_impl_bwd}")
+
+        if is_profiling: torch.cuda.cudart().cudaProfilerStop()
