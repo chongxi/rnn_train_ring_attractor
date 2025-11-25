@@ -1,14 +1,11 @@
-import torch
-from torch.autograd import Function
 from utils.benchmark import *
+import sys
+from pathlib import Path
 
-from rnn_cuda import bwd_cuda, fwd_cuda
+import cpp.build.fwd as fwd_cuda #type: ignore
+import cpp.build.bwd as bwd_cuda #type: ignore
+print("Imported rnn_cuda prebuilt from cpp/build")
 
-# import build.fwd as fwd_cuda #type: ignore
-# import build.bwd as bwd_cuda #type: ignore
-
-
-# from ring_rnn_cuda import ring_rnn_cuda_func
 
 import torch
 from torch.autograd import Function

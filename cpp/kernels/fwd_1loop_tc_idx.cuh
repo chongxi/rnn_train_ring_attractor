@@ -83,7 +83,7 @@ namespace fwd_mixed {
 
         if (global_m_base >= batch_size || global_n_neuron >= n_neur) return;
 
-        bool is_first = (t == 0);
+        // bool is_first = (t == 0);
 
         constexpr int ld = BK + 8;
         constexpr int lda = ld;

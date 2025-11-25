@@ -65,7 +65,7 @@ if force_rebuild:
 
 fwd_cuda = load(
     name='fwd',
-    sources=[f"{dir_path}/cpp/fwd.cu", f"{dir_path}/cpp/fwd.cpp"],
+    sources=[f"{dir_path}/fwd.cu", f"{dir_path}/fwd.cpp"],
     verbose=True,
     build_directory=build_dir,
     extra_cuda_cflags=[
@@ -85,7 +85,7 @@ else:
 
 bwd_cuda = load(
     name='bwd',
-    sources=[f"{dir_path}/cpp/bwd.cu", f"{dir_path}/cpp/bwd.cpp"],
+    sources=[f"{dir_path}/bwd.cu", f"{dir_path}/bwd.cpp"],
     verbose=True,
     build_directory=build_dir,
     extra_cuda_cflags=[

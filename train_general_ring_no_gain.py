@@ -1,4 +1,3 @@
-import torch
 import torch.nn as nn
 import numpy as np
 import matplotlib.pyplot as plt
@@ -7,7 +6,7 @@ import matplotlib.pyplot as plt
 from utils.generate_av_integration_data import AVIntegrationDataset
 
 # Import helper functions from train_ring_attractor
-from train_ring_attractor import (
+from train.train_ring_attractor import (
     non_linear,
     create_initial_bump,
     cosine_similarity_loss,
@@ -16,7 +15,8 @@ from train_ring_attractor import (
     decode_angle_from_argmax,
     plot_ring_matrices
 )
-from ring_rnn_cuda import *
+
+from cpp.ring_rnn_cuda import *
 
 class GeneralizedRingAttractorNoGain(nn.Module):
     """

@@ -4,7 +4,8 @@ cpp/profile.*
 cpp/CMakeLists.txt
 cpp/cmake-build-debug
 cpp/cmake-build-release
-build
+build/
+profiles/
 *.nsys-rep
 
 **/__pycache__/

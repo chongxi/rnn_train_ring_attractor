@@ -1,6 +1,20 @@
 import torch
 from torch.autograd import Function
-from rnn_cuda import fwd_cuda, bwd_cuda
+import sys
+from pathlib import Path
+
+build_dir = Path(__file__).parent / "build"
+
+try:
+    sys.path.insert(0, str(build_dir))
+    import fwd as fwd_cuda
+    import bwd as bwd_cuda
+    print("rnn_cuda Imported from prebuilt in cpp/build")
+except ImportError:
+    print("Prebuilt not found, falling back to JIT compilation...")
+    from .rnn_cuda import fwd_cuda, bwd_cuda
+    print("Successfully imported via JIT from rnn_cuda.py")
+
 def ring_rnn_cuda_func(
         action_signal,
         Wa,
