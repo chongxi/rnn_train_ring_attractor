@@ -4,7 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # Import the cleaned data generation module
-from generate_av_integration_data import AVIntegrationDataset
+from utils.generate_av_integration_data import AVIntegrationDataset
 
 # Import helper functions from train_ring_attractor
 from train_ring_attractor import (
@@ -18,14 +18,16 @@ from train_ring_attractor import (
 )
 
 
-class GeneralizedRingAttractor(nn.Module):
+class GeneralizedRingAttractorNoGain(nn.Module):
     """
-    Generalized Ring Attractor model with arbitrary action dimensions.
+    Generalized Ring Attractor model with arbitrary action dimensions but WITHOUT gain networks.
     r += (-r + F(J0.dot(r) + J1*Wo.dot(r) + sum_i(A_i * Wa_i.dot(r)))) * dt / tau
     where A is an action vector of dimension k, and Wa is a tensor of shape (k, N, N)
+
+    This version directly uses action signals without any gain modulation.
     """
     def __init__(self, num_neurons, action_dim=2, tau=10.0, dt=1.0, activation='tanh',
-                 initialization='random', hidden_gain_neurons=16):
+                 initialization='random'):
         super().__init__()
         self.num_neurons = num_neurons
         self.action_dim = action_dim
@@ -33,17 +35,6 @@ class GeneralizedRingAttractor(nn.Module):
         self.dt = dt
         self.activation_name = activation
         self.initialization = initialization
-
-        # Gain networks for each action dimension
-        def create_gain_net():
-            return nn.Sequential(
-                nn.Linear(1, hidden_gain_neurons),
-                nn.GELU(),
-                nn.Linear(hidden_gain_neurons, 1),
-                nn.Softplus()
-            )
-
-        self.gain_nets = nn.ModuleList([create_gain_net() for _ in range(action_dim)])
 
         # Define W_delta7 as a NON-LEARNABLE buffer
         indices = torch.arange(num_neurons, dtype=torch.float32)
@@ -96,17 +87,8 @@ class GeneralizedRingAttractor(nn.Module):
         self.J0 = self.J0.to(self.Wo.device)
         self.W_delta7 = self.W_delta7.to(self.Wo.device)
 
-        # Compute gains for each action dimension
-        gains = []
-        for k in range(self.action_dim):
-            # Extract magnitude for this action dimension
-            action_mag = torch.abs(action_signal[:, :, k:k+1])  # (batch, seq, 1)
-            gain = self.gain_nets[k](action_mag)  # (batch, seq, 1)
-            gains.append(gain.squeeze(-1))  # Remove last dimension
-        gains = torch.stack(gains, dim=2)  # (batch, seq, action_dim)
-
-        # Apply gains to action signals
-        A = action_signal * gains  # (batch, seq, action_dim)
+        # NO GAIN COMPUTATION - directly use action signals
+        A = action_signal  # (batch, seq, action_dim)
 
         if r_init is None:
             initial_angle = torch.full((batch_size,), np.pi, device=self.Wo.device)
@@ -180,7 +162,7 @@ def plot_general_ring_matrices(ring_rnn, title_prefix=""):
     if num_plots == 1:
         axes = [axes]
 
-    fig.suptitle(f"{title_prefix} Weight Matrices (Action Dim={action_dim})")
+    fig.suptitle(f"{title_prefix} Weight Matrices (Action Dim={action_dim}, No Gain)")
 
     # Plot Wo
     im = axes[0].imshow(ring_rnn.Wo.detach().cpu().numpy())
@@ -194,7 +176,7 @@ def plot_general_ring_matrices(ring_rnn, title_prefix=""):
         fig.colorbar(im, ax=axes[i+1])
 
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-    output_filename = f"{title_prefix.lower().replace(' ', '_')}general_ring_matrices.png"
+    output_filename = f"{title_prefix.lower().replace(' ', '_')}general_ring_no_gain_matrices.png"
     plt.savefig(output_filename)
     print(f"Saved weight matrices plot to {output_filename}")
     plt.close(fig)
@@ -204,8 +186,8 @@ def run_training_and_evaluation(action_dim=2):
     # --- Device Setup ---
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
-    print(f"Training GeneralizedRingAttractor with action_dim={action_dim}")
-    print("Note: For angular velocity task, we always use 2D action signals [L, R]")
+    print(f"Training GeneralizedRingAttractorNoGain with action_dim={action_dim}")
+    print("Note: This model has NO gain networks - using raw action signals directly")
 
     # --- Training Parameters ---
     num_neurons = 120
@@ -230,17 +212,17 @@ def run_training_and_evaluation(action_dim=2):
 
     # --- MODEL SETUP ---
     initial_weights = 'random'
-    ring_rnn = GeneralizedRingAttractor(
+    ring_rnn = GeneralizedRingAttractorNoGain(
         num_neurons=num_neurons,
         action_dim=action_dim,
         tau=10,
         dt=1,
         activation='gelu',
-        initialization=initial_weights,
-        hidden_gain_neurons=3
+        initialization=initial_weights
     )
     ring_rnn.to(device)
-    print(f"\nInitializing a generalized model with {initial_weights} weights and action_dim={action_dim}")
+    print(f"\nInitializing model with {initial_weights} weights and action_dim={action_dim}")
+    print("NO GAIN NETWORKS in this version")
     print("--------------------")
 
     plot_general_ring_matrices(ring_rnn, title_prefix=f"Initial {initial_weights}")
@@ -288,7 +270,7 @@ def run_training_and_evaluation(action_dim=2):
     print("Training finished.")
 
     # --- EVALUATION ---
-    print("\nEvaluating the TRAINED generalized model...")
+    print("\nEvaluating the TRAINED model (NO GAIN)...")
     ring_rnn.eval()
 
     plot_general_ring_matrices(ring_rnn, title_prefix="Trained")
@@ -320,7 +302,7 @@ def run_training_and_evaluation(action_dim=2):
 
     # Create visualization
     fig, axes = plt.subplots(6, 1, figsize=(12, 14), sharex=True)
-    fig.suptitle(f"Performance of Trained Generalized Model (Action Dim={action_dim})")
+    fig.suptitle(f"Performance of Trained Model WITHOUT Gain Networks (Action Dim={action_dim})")
 
     im = axes[0].imshow(cos_activity[0].detach().cpu().numpy().T, aspect='auto', interpolation='nearest')
     axes[0].set_title('Network Activity (Cosine Output)')
@@ -352,7 +334,7 @@ def run_training_and_evaluation(action_dim=2):
                 label='L (Left)', alpha=0.7, color='blue')
     axes[4].plot(action_signal_test[0, :, 1].cpu().numpy(),
                 label='R (Right)', alpha=0.7, color='red')
-    axes[4].set_title(f'Action Signals [L, R] (Model capacity: {action_dim}D)')
+    axes[4].set_title(f'Action Signals [L, R] (NO GAIN MODULATION)')
     axes[4].set_ylabel('Action Value')
     axes[4].legend()
 
@@ -365,14 +347,14 @@ def run_training_and_evaluation(action_dim=2):
     axes[5].legend()
 
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-    output_filename = f"trained_general_model_integration_results_dim{action_dim}.png"
+    output_filename = f"trained_model_no_gain_results_dim{action_dim}.png"
     plt.savefig(output_filename)
     print(f"Saved evaluation plot to {output_filename}")
     plt.close(fig)
 
     # Plot loss curves
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
-    fig.suptitle(f"Training Curves (Action Dim={action_dim})")
+    fig.suptitle(f"Training Curves - NO GAIN (Action Dim={action_dim})")
 
     ax1.plot(loss_history)
     ax1.set_xlabel('Training Step')
@@ -389,8 +371,8 @@ def run_training_and_evaluation(action_dim=2):
     ax2.grid(True, alpha=0.3)
 
     plt.tight_layout()
-    plt.savefig(f'training_curves_general_dim{action_dim}.png')
-    print(f"Saved training curves to training_curves_general_dim{action_dim}.png")
+    plt.savefig(f'training_curves_no_gain_dim{action_dim}.png')
+    print(f"Saved training curves to training_curves_no_gain_dim{action_dim}.png")
     plt.close(fig)
 
     return ring_rnn, loss_history
@@ -398,7 +380,7 @@ def run_training_and_evaluation(action_dim=2):
 
 if __name__ == '__main__':
     import argparse
-    parser = argparse.ArgumentParser(description='Train Generalized Ring Attractor')
+    parser = argparse.ArgumentParser(description='Train Generalized Ring Attractor WITHOUT Gain Networks')
     parser.add_argument('--action_dim', type=int, default=2,
                        help='Number of action dimensions (default: 2 for L/R)')
     args = parser.parse_args()

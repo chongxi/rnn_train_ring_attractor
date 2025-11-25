@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 import matplotlib.pyplot as plt
-from generate_av_integration_data import AVIntegrationDataset
+from utils.generate_av_integration_data import AVIntegrationDataset
 from train_ring_attractor import LeakyRingAttractor, create_initial_bump, decode_angle_from_population_vector, cosine_similarity_loss
 from train_gru import GRU_Integrator, integration_aware_loss
 
@@ -52,12 +52,12 @@ def evaluate_trained_models():
     print("="*60)
     
     ring_model = LeakyRingAttractor(
-        num_neurons=128,
+        num_neurons=120,
         tau=10,
         dt=1,
         activation='gelu',
         initialization='random',
-        hidden_gain_neurons=6
+        hidden_gain_neurons=3
     )
     ring_model.to(device)
     

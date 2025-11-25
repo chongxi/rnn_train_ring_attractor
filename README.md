@@ -9,7 +9,7 @@ Watch how the network learns three essential circuits:
 - **W_L (Left Turn)**: Activated by left turn motor signals, rotates the bump counterclockwise to track leftward movement
 - **W_R (Right Turn)**: Activated by right turn motor signals, rotates the bump clockwise to track rightward movement
 
-![Weight Evolution](ring_attractor_weights_evolution.gif)
+![Weight Evolution](assets/ring_attractor_weights_evolution.gif)
 
 ## Overview
 
@@ -139,3 +139,17 @@ The training script generates:
 This model is inspired by:
 - Ring attractor dynamics in fruit fly navigation circuits
 - Head direction cells in the mammalian brain
+
+
+## CUDA kernel:
+
+1. Run:
+
+```bash
+pip install ninja
+python fwd_fp32.py
+```
+
+2. Benchmark results
+Ref is Pytorch version, Impl is CUDA implementation, check assets/REPORT.md
+

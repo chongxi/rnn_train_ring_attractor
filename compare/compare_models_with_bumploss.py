@@ -2,15 +2,18 @@ import torch
 import torch.nn as nn
 import numpy as np
 import matplotlib.pyplot as plt
-from generate_av_integration_data import AVIntegrationDataset
-from train_ring_attractor import LeakyRingAttractor, create_initial_bump, decode_angle_from_population_vector, cosine_similarity_loss
+from utils.generate_av_integration_data import AVIntegrationDataset
+from train_ring_attractor import LeakyRingAttractor, create_initial_bump, decode_angle_from_population_vector, cosine_similarity_loss, bump_amplitude_loss
 from train_gru import GRU_Integrator, integration_aware_loss
+import time  # Add this import at the top
 
 
 
 training_steps = 1000
 batch_size = 128
-seq_len = 60
+seq_len_train = 120
+seq_len_test  = 1200
+
 
 def calculate_angular_error(pred_angles, true_angles):
     """Calculate circular distance error between predicted and true angles."""
@@ -28,7 +31,7 @@ def evaluate_trained_models():
     print("\nCreating training dataset...")
     train_dataset = AVIntegrationDataset(
         num_samples=training_steps * batch_size,
-        seq_len=seq_len,
+        seq_len=seq_len_train,
         zero_padding_start_ratio=0.1,
         zero_ratios_in_rest=[0.2, 0.5, 0.8],
         device=device,
@@ -38,8 +41,8 @@ def evaluate_trained_models():
     # Create test dataset with more samples for robust evaluation
     print("\nCreating test dataset...")
     test_dataset = AVIntegrationDataset(
-        num_samples=200,  # 500 test sequences
-        seq_len=500,      # Longer sequences to test integration
+        num_samples=200,          
+        seq_len=seq_len_test,      # Longer sequences to test integration
         zero_padding_start_ratio=0.01,
         zero_ratios_in_rest=[0.2, 0.5, 0.8],
         device=device,
@@ -52,35 +55,53 @@ def evaluate_trained_models():
     print("="*60)
     
     ring_model = LeakyRingAttractor(
-        num_neurons=120,
+        num_neurons=128,
         tau=10,
         dt=1,
         activation='gelu',
         initialization='random',
-        hidden_gain_neurons=3
+        hidden_gain_neurons=6
     )
     ring_model.to(device)
     
     ring_optimizer = torch.optim.Adam(ring_model.parameters(), lr=1e-3)
     ring_losses = []
+    ring_bump_losses = []
     
     # Train Ring Attractor
+    ring_training_times = []
     for step in range(training_steps):
+        step_start_time = time.time()
+        
         av_signal, target_angle = train_dataset.generate_batch(batch_size)
         initial_angle = target_angle[:, 0]
         r_init = create_initial_bump(initial_angle, ring_model.num_neurons, device=device)
         
         predicted_cosine_wave, bump_activity = ring_model(av_signal, r_init=r_init)
         loss = cosine_similarity_loss(predicted_cosine_wave, target_angle)
+        bump_loss = bump_amplitude_loss(bump_activity)
+        
+        total_loss = loss + 0.2 * bump_loss
         
         ring_optimizer.zero_grad()
-        loss.backward()
+        total_loss.backward()
         torch.nn.utils.clip_grad_norm_(ring_model.parameters(), 1.0)
         ring_optimizer.step()
         
-        ring_losses.append(loss.item())
+        step_time = time.time() - step_start_time
+        ring_training_times.append(step_time)
+        
+        ring_losses.append(total_loss.item())
+        ring_bump_losses.append(bump_loss.item())
         if step % 100 == 0:
-            print(f"Step {step}/{training_steps}, Loss: {loss.item():.4f}")
+            avg_time = np.mean(ring_training_times[-100:]) if len(ring_training_times) >= 100 else np.mean(ring_training_times)
+            print(f"Step {step}/{training_steps}, Total Loss: {total_loss.item():.4f}, "
+                  f"Main loss: {loss.item():.4f}, "
+                  f"Bump loss: {bump_loss.item():.4f}, "
+                  f"Avg time/step: {avg_time*1000:.2f}ms")
+    
+    ring_avg_time = np.mean(ring_training_times)
+    print(f"\nRing Attractor Average Training Time: {ring_avg_time*1000:.2f}ms per step")
     
     print("\n" + "="*60)
     print("TRAINING GRU MODEL")
@@ -99,7 +120,10 @@ def evaluate_trained_models():
     gru_losses = []
     
     # Train GRU
+    gru_training_times = []
     for step in range(training_steps):
+        step_start_time = time.time()
+        
         av_signal, target_angle = train_dataset.generate_batch(batch_size)
         initial_angle = target_angle[:, 0]
         
@@ -113,9 +137,25 @@ def evaluate_trained_models():
         torch.nn.utils.clip_grad_norm_(gru_model.parameters(), 1.0)
         gru_optimizer.step()
         
+        step_time = time.time() - step_start_time
+        gru_training_times.append(step_time)
+        
         gru_losses.append(total_loss.item())
         if step % 100 == 0:
-            print(f"Step {step}/{training_steps}, Loss: {total_loss.item():.4f}")
+            avg_time = np.mean(gru_training_times[-100:]) if len(gru_training_times) >= 100 else np.mean(gru_training_times)
+            print(f"Step {step}/{training_steps}, Loss: {total_loss.item():.4f}, "
+                  f"Avg time/step: {avg_time*1000:.2f}ms")
+    
+    gru_avg_time = np.mean(gru_training_times)
+    print(f"\nGRU Average Training Time: {gru_avg_time*1000:.2f}ms per step")
+    
+    # Print comparison
+    print(f"\n" + "="*60)
+    print("TRAINING TIME COMPARISON")
+    print("="*60)
+    print(f"Ring Attractor: {ring_avg_time*1000:.2f}ms per step")
+    print(f"GRU Model: {gru_avg_time*1000:.2f}ms per step")
+    print(f"GRU is {ring_avg_time/gru_avg_time:.2f}x faster than Ring Attractor")
     
     # Evaluate both models on the same test set
     print("\n" + "="*60)
@@ -159,8 +199,8 @@ def evaluate_trained_models():
             gru_errors_all.append(gru_errors)
     
     # Concatenate all errors
-    ring_errors_all = torch.cat(ring_errors_all, dim=0)  # Shape: (200, 500)
-    gru_errors_all = torch.cat(gru_errors_all, dim=0)    # Shape: (200, 500)
+    ring_errors_all = torch.cat(ring_errors_all, dim=0)  # Shape: (200, 1200)
+    gru_errors_all = torch.cat(gru_errors_all, dim=0)    # Shape: (200, 1200)
     
     # Calculate statistics
     ring_mean_error = ring_errors_all.mean().item()
@@ -175,7 +215,7 @@ def evaluate_trained_models():
     
     # Print results
     print("\n" + "="*60)
-    print("ANGULAR ERROR COMPARISON (200 test sequences, 500 time steps each)")
+    print("ANGULAR ERROR COMPARISON (200 test sequences, 1200 time steps each)")
     print("="*60)
     
     print(f"\nRing Attractor Model:")
@@ -194,8 +234,8 @@ def evaluate_trained_models():
     print(f"  GRU error is {ring_mean_error/gru_mean_error:.2f}x smaller than Ring Attractor")
     
     # Visualization
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-    fig.suptitle("Model Comparison: Angular Integration Error Analysis", fontsize=16)
+    fig, axes = plt.subplots(2, 3, figsize=(18, 10))  # Changed to 2x3 grid
+    fig.suptitle("Model Comparison: Angular Integration Error Analysis (with Bump Loss)", fontsize=16)
     
     # Plot 1: Training loss curves
     ax = axes[0, 0]
@@ -208,11 +248,21 @@ def evaluate_trained_models():
     ax.legend()
     ax.grid(True, alpha=0.3)
     
-    # Plot 2: Error over time (averaged across all test sequences)
+    # Plot 2: Bump loss evolution (new)
     ax = axes[0, 1]
+    ax.plot(ring_bump_losses, 'g-', alpha=0.7, label='Ring Attractor Bump Loss')
+    ax.set_xlabel('Training Step')
+    ax.set_ylabel('Bump Loss')
+    ax.set_title('Bump Loss During Training')
+    ax.set_yscale('log')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    
+    # Plot 3: Error over time (averaged across all test sequences)
+    ax = axes[0, 2]
     ring_error_mean_over_time = ring_errors_all.mean(dim=0).cpu().numpy()
     gru_error_mean_over_time = gru_errors_all.mean(dim=0).cpu().numpy()
-    time_steps = np.arange(500)
+    time_steps = np.arange(seq_len_test)
     ax.plot(time_steps, ring_error_mean_over_time, 'b-', label='Ring Attractor', linewidth=2)
     ax.plot(time_steps, gru_error_mean_over_time, 'r-', label='GRU', linewidth=2)
     ax.fill_between(time_steps, 
@@ -224,7 +274,7 @@ def evaluate_trained_models():
                     gru_error_mean_over_time + gru_errors_all.std(dim=0).cpu().numpy(),
                     alpha=0.2, color='red')
     # Add vertical line at training sequence length (120 steps)
-    ax.axvline(x=seq_len, color='gray', linestyle=':', alpha=0.7, linewidth=2, 
+    ax.axvline(x=seq_len_test, color='gray', linestyle=':', alpha=0.7, linewidth=2, 
                label='Training seq length')
     ax.set_xlabel('Time Step')
     ax.set_ylabel('Angular Error (rad)')
@@ -232,7 +282,7 @@ def evaluate_trained_models():
     ax.legend()
     ax.grid(True, alpha=0.3)
     
-    # Plot 3: Error distribution histogram
+    # Plot 4: Error distribution histogram
     ax = axes[1, 0]
     ax.hist(ring_errors_all.flatten().cpu().numpy(), bins=50, alpha=0.5, 
             label=f'Ring Attractor (μ={ring_mean_error:.3f})', color='blue', density=True)
@@ -244,18 +294,32 @@ def evaluate_trained_models():
     ax.legend()
     ax.grid(True, alpha=0.3)
     
-    # Plot 4: Final time step errors
+    # Plot 5: Final time step errors
     ax = axes[1, 1]
     final_ring_errors = ring_errors_all[:, -1].cpu().numpy()
     final_gru_errors = gru_errors_all[:, -1].cpu().numpy()
     ax.boxplot([final_ring_errors, final_gru_errors], labels=['Ring Attractor', 'GRU'])
     ax.set_ylabel('Angular Error at Final Step (rad)')
-    ax.set_title('Integration Drift (Error at t=500)')
+    ax.set_title(f'Integration Drift (Error at t={seq_len_test})')
+    ax.grid(True, alpha=0.3)
+    
+    # Plot 6: Ring loss components (new)
+    ax = axes[1, 2]
+    # Extract the main loss component
+    ring_main_losses = [ring_losses[i] - 0.2 * ring_bump_losses[i] for i in range(len(ring_losses))]
+    ax.plot(ring_main_losses, 'b-', alpha=0.7, label='Main Loss')
+    ax.plot([0.2 * bl for bl in ring_bump_losses], 'g-', alpha=0.7, label='0.2 × Bump Loss')
+    ax.plot(ring_losses, 'k--', alpha=0.5, label='Total Loss')
+    ax.set_xlabel('Training Step')
+    ax.set_ylabel('Loss')
+    ax.set_title('Ring Attractor Loss Components')
+    ax.set_yscale('log')
+    ax.legend()
     ax.grid(True, alpha=0.3)
     
     plt.tight_layout()
-    plt.savefig('fair_model_comparison.png', dpi=150, bbox_inches='tight')
-    print("\nSaved comparison plot to fair_model_comparison.png")
+    plt.savefig('fair_model_comparison_with_bumploss.png', dpi=150, bbox_inches='tight')
+    print("\nSaved comparison plot to fair_model_comparison_with_bumploss.png")
     plt.close()
     
     # Save a sample trajectory comparison
@@ -300,8 +364,8 @@ def evaluate_trained_models():
     axes[2].grid(True, alpha=0.3)
     
     plt.tight_layout()
-    plt.savefig('sample_trajectory_comparison.png', dpi=150, bbox_inches='tight')
-    print("Saved sample trajectory to sample_trajectory_comparison.png")
+    plt.savefig('sample_trajectory_comparison_with_bumploss.png', dpi=150, bbox_inches='tight')
+    print("Saved sample trajectory to sample_trajectory_comparison_with_bumploss.png")
     
     return ring_model, gru_model, ring_errors_all, gru_errors_all
 

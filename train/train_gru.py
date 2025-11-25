@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 # Import the data generation module
-from generate_av_integration_data import AVIntegrationDataset
+from utils.generate_av_integration_data import AVIntegrationDataset
 
 
 class GRU_Integrator(nn.Module):

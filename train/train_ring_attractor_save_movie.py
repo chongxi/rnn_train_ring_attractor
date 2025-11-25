@@ -2,9 +2,12 @@ import torch
 import torch.nn as nn
 import numpy as np
 import matplotlib.pyplot as plt
+import os
+import glob
+import subprocess
 
 # Import the cleaned data generation module
-from generate_av_integration_data import AVIntegrationDataset
+from utils.generate_av_integration_data import AVIntegrationDataset
 
 
 def non_linear(x, activation_name):
@@ -220,9 +223,14 @@ def cosine_similarity_loss(predicted_cosine_wave, true_angle):
     return loss
 
 
-def plot_ring_matrices(ring_rnn, title_prefix=""):
+def plot_ring_matrices(ring_rnn, output_dir="", step=None):
+    """Modified to save to specific directory with step number."""
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
-    fig.suptitle(f"{title_prefix} Weight Matrices")
+    
+    if step is not None:
+        fig.suptitle(f"Weight Matrices - Step {step}")
+    else:
+        fig.suptitle("Weight Matrices")
     
     weights = [ring_rnn.Wo, ring_rnn.Wl, ring_rnn.Wr]
     titles = ['Wo', 'Wl', 'Wr']
@@ -233,10 +241,48 @@ def plot_ring_matrices(ring_rnn, title_prefix=""):
         fig.colorbar(im, ax=ax)
         
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-    output_filename = f"{title_prefix.lower().replace(' ', '_')}ring_matrices.png"
-    plt.savefig(output_filename)
-    print(f"Saved weight matrices plot to {output_filename}")
+    
+    if step is not None:
+        output_filename = os.path.join(output_dir, f"weights_step_{step:06d}.png")
+    else:
+        output_filename = os.path.join(output_dir, "weights_final.png")
+    
+    plt.savefig(output_filename, dpi=100)
     plt.close(fig)
+
+
+def create_weight_video(image_folder, output_video, fps=10):
+    """Create a video from the saved weight matrix images using ffmpeg."""
+    # Get list of all weight images
+    pattern = os.path.join(image_folder, "weights_step_*.png")
+    images = sorted(glob.glob(pattern))
+    
+    if not images:
+        print(f"No images found in {image_folder}")
+        return
+    
+    print(f"Creating video from {len(images)} images...")
+    
+    # Use ffmpeg to create the video
+    ffmpeg_cmd = [
+        'ffmpeg',
+        '-framerate', str(fps),
+        '-pattern_type', 'glob',
+        '-i', f'{image_folder}/weights_step_*.png',
+        '-c:v', 'libx264',
+        '-pix_fmt', 'yuv420p',
+        '-y',  # Overwrite output file if it exists
+        output_video
+    ]
+    
+    try:
+        subprocess.run(ffmpeg_cmd, check=True)
+        print(f"Video saved to {output_video}")
+    except subprocess.CalledProcessError as e:
+        print(f"Error creating video: {e}")
+        print("Make sure ffmpeg is installed: sudo apt-get install ffmpeg")
+    except FileNotFoundError:
+        print("ffmpeg not found. Please install it: sudo apt-get install ffmpeg")
 
 
 def decode_angle_from_argmax(activity):
@@ -310,6 +356,11 @@ def run_training_and_evaluation():
     batch_size = 128
     seq_len = 120
     
+    # --- Create output directory for weight images ---
+    weight_dir = "ring_attractor_weights"
+    os.makedirs(weight_dir, exist_ok=True)
+    print(f"Weight images will be saved to: {weight_dir}")
+    
     # === Create dataset for on-demand batch generation ===
     print(f"\nCreating AVIntegrationDataset for on-demand batch generation...")
     
@@ -356,7 +407,8 @@ def run_training_and_evaluation():
     print(f"\nInitializing a model with {initial_weights} weights")
     print("--------------------")
 
-    plot_ring_matrices(ring_rnn, title_prefix=f"Initial {initial_weights}")
+    # Save initial weights
+    plot_ring_matrices(ring_rnn, output_dir=weight_dir, step=0)
     optimizer = torch.optim.Adam(ring_rnn.parameters(), lr=learning_rate)
 
     # --- TRAINING LOOP ---
@@ -392,14 +444,22 @@ def run_training_and_evaluation():
             print(f"Step {step}/{training_steps}, Total Loss: {total_loss.item():.4f}, "
                   f"Main loss: {loss.item():.4f}, "
                   f"Bump loss: {bump_loss.item():.4f}")
+            
+            # Save weight matrices every 10 steps
+            plot_ring_matrices(ring_rnn, output_dir=weight_dir, step=step)
     
     print("Training finished.")
+    
+    # Save final weights
+    plot_ring_matrices(ring_rnn, output_dir=weight_dir, step=training_steps)
+    
+    # Create video from saved weight images
+    video_path = "ring_attractor_weights_evolution.mp4"
+    create_weight_video(weight_dir, video_path, fps=10)
     
     # --- EVALUATION ---
     print("\nEvaluating the TRAINED model...")
     ring_rnn.eval()
-    
-    plot_ring_matrices(ring_rnn, title_prefix="Trained")
     
     # Generate test data using dataset
     # Create a temporary dataset for longer evaluation sequence

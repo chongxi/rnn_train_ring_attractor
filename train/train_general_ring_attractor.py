@@ -1,3 +1,4 @@
+import torch
 import torch.nn as nn
 import numpy as np
 import matplotlib.pyplot as plt
@@ -6,7 +7,7 @@ import matplotlib.pyplot as plt
 from utils.generate_av_integration_data import AVIntegrationDataset
 
 # Import helper functions from train_ring_attractor
-from train.train_ring_attractor import (
+from train_ring_attractor import (
     non_linear,
     create_initial_bump,
     cosine_similarity_loss,
@@ -16,18 +17,15 @@ from train.train_ring_attractor import (
     plot_ring_matrices
 )
 
-from cpp.ring_rnn_cuda import *
 
-class GeneralizedRingAttractorNoGain(nn.Module):
+class GeneralizedRingAttractor(nn.Module):
     """
-    Generalized Ring Attractor model with arbitrary action dimensions but WITHOUT gain networks.
+    Generalized Ring Attractor model with arbitrary action dimensions.
     r += (-r + F(J0.dot(r) + J1*Wo.dot(r) + sum_i(A_i * Wa_i.dot(r)))) * dt / tau
     where A is an action vector of dimension k, and Wa is a tensor of shape (k, N, N)
-
-    This version directly uses action signals without any gain modulation.
     """
     def __init__(self, num_neurons, action_dim=2, tau=10.0, dt=1.0, activation='tanh',
-                 initialization='random'):
+                 initialization='random', hidden_gain_neurons=16):
         super().__init__()
         self.num_neurons = num_neurons
         self.action_dim = action_dim
@@ -35,6 +33,17 @@ class GeneralizedRingAttractorNoGain(nn.Module):
         self.dt = dt
         self.activation_name = activation
         self.initialization = initialization
+
+        # Gain networks for each action dimension
+        def create_gain_net():
+            return nn.Sequential(
+                nn.Linear(1, hidden_gain_neurons),
+                nn.GELU(),
+                nn.Linear(hidden_gain_neurons, 1),
+                nn.Softplus()
+            )
+
+        self.gain_nets = nn.ModuleList([create_gain_net() for _ in range(action_dim)])
 
         # Define W_delta7 as a NON-LEARNABLE buffer
         indices = torch.arange(num_neurons, dtype=torch.float32)
@@ -44,7 +53,7 @@ class GeneralizedRingAttractorNoGain(nn.Module):
         self.register_buffer('W_delta7', torch.cos(angle_diff))
 
         # Fixed parameters
-        self.J0 = -0.1
+        self.J0 = -0.1 * torch.ones(num_neurons, num_neurons)
         self.J1 = 0.1
 
         # Learnable parameters
@@ -82,96 +91,69 @@ class GeneralizedRingAttractorNoGain(nn.Module):
             r_init: Initial neural state
         """
         batch_size, seq_len, action_dim = action_signal.shape
-        # print("input action signal shape: ", action_signal.shape)
-        # print("self.action dim shape: ", self.action_dim)
         assert action_dim == self.action_dim, f"Expected action_dim {self.action_dim}, got {action_dim}"
 
+        self.J0 = self.J0.to(self.Wo.device)
         self.W_delta7 = self.W_delta7.to(self.Wo.device)
 
-        # NO GAIN COMPUTATION - directly use action signals
-        A = action_signal  # (batch, seq, action_dim)
+        # Compute gains for each action dimension
+        gains = []
+        for k in range(self.action_dim):
+            # Extract magnitude for this action dimension
+            action_mag = torch.abs(action_signal[:, :, k:k+1])  # (batch, seq, 1)
+            gain = self.gain_nets[k](action_mag)  # (batch, seq, 1)
+            gains.append(gain.squeeze(-1))  # Remove last dimension
+        gains = torch.stack(gains, dim=2)  # (batch, seq, action_dim)
+
+        # Apply gains to action signals
+        A = action_signal * gains  # (batch, seq, action_dim)
 
         if r_init is None:
             initial_angle = torch.full((batch_size,), np.pi, device=self.Wo.device)
             r = create_initial_bump(initial_angle, self.num_neurons, device=self.Wo.device)
         else:
-            r = r_init.clone()
+            r = r_init
 
+        r_history = []
+        bump_history = []
 
-        bump_history = ring_rnn_cuda_func(
-            action_signal=action_signal,
-            Wa=self.Wa,
-            J0=self.J0,
-            J1=self.J1,
-            Wo=self.Wo,
-            r_init=r,
-            alpha=0.15,
-            activation=self.activation_name
+        for t in range(seq_len):
+            # Get action vector at time t
+            A_t = A[:, t, :]  # (batch, action_dim)
 
-        )
+            # Compute weighted sum of action matrices
+            # Wa has shape (action_dim, num_neurons, num_neurons)
+            # A_t has shape (batch, action_dim)
+            # We need to compute sum_k(A_t[k] * Wa[k]) for each batch
 
-        bump_history = bump_history.permute(1, 0, 2)
-        r_delta7 = bump_history @ self.W_delta7
-        r_max = r_delta7.max(dim=2, keepdim=True)[0]
-        r_history = r_delta7 / r_max
+            # Reshape A_t to (batch, action_dim, 1, 1) for broadcasting
+            A_t_expanded = A_t.unsqueeze(-1).unsqueeze(-1)
 
-        return r_history.clone(), bump_history.clone()
+            # Compute weighted sum: (batch, action_dim, 1, 1) * (action_dim, N, N) -> (batch, N, N)
+            Wa_weighted = torch.sum(A_t_expanded * self.Wa.unsqueeze(0), dim=1)
 
-    # def forward(self, action_signal, r_init=None):
-    #     """
-    #     Args:
-    #         action_signal: (batch_size, seq_len, action_dim) - generalized action signals
-    #         r_init: Initial neural state
-    #     """
-    #     batch_size, seq_len, action_dim = action_signal.shape
-    #     assert action_dim == self.action_dim, f"Expected action_dim {self.action_dim}, got {action_dim}"
-    #
-    #     self.W_delta7 = self.W_delta7.to(self.Wo.device)
-    #
-    #     # NO GAIN COMPUTATION - directly use action signals
-    #     A = action_signal  # (batch, seq, action_dim)
-    #
-    #     if r_init is None:
-    #         initial_angle = torch.full((batch_size,), np.pi, device=self.Wo.device)
-    #         r = create_initial_bump(initial_angle, self.num_neurons, device=self.Wo.device)
-    #     else:
-    #         r = r_init
-    #
-    #     r_history = []
-    #     bump_history = []
-    #
-    #     for t in range(seq_len):
-    #         A_t = A[:, t, :]  # (batch, action_dim)
-    #
-    #         ## torch.sum version
-    #         # A_t_expanded = A_t.unsqueeze(-1).unsqueeze(-1)
-    #         # A_t_expanded = A_t.unsqueeze(-1).unsqueeze(-1)
-    #         # Wa_weighted = torch.sum(A_t_expanded * self.Wa.unsqueeze(0), dim=1)
-    #
-    #         ## torch.matmul version
-    #         Wa_flat = self.Wa.view(action_dim, self.num_neurons * self.num_neurons)
-    #         Wa_weighted = torch.matmul(A_t, Wa_flat).view(batch_size, self.num_neurons, self.num_neurons)
-    #
-    #         W_eff = self.J0 + self.J1 * self.Wo + Wa_weighted
-    #
-    #         # Recurrent dynamics
-    #         recurrent_input = (W_eff @ r.unsqueeze(2)).squeeze(2)
-    #         recurrent_input = non_linear(recurrent_input, self.activation_name)
-    #
-    #         # Update rule (leaky integration)
-    #         alpha = 0.15
-    #         r = r * (1 - alpha) + recurrent_input * alpha
-    #
-    #         bump_history.append(r)
-    #
-    #         # Transform to cosine wave for output
-    #         r_delta7 = r @ self.W_delta7
-    #         r_max = r_delta7.max(dim=1, keepdim=True)[0]
-    #         r_delta7 = r_delta7 / r_max
-    #
-    #         r_history.append(r_delta7)
-    #
-    #     return torch.stack(r_history, dim=1), torch.stack(bump_history, dim=1)
+            # Effective weight matrix
+            W_eff = self.J0 + self.J1 * self.Wo + Wa_weighted
+
+            # Recurrent dynamics
+            recurrent_input = (W_eff @ r.unsqueeze(2)).squeeze(2)
+            recurrent_input = non_linear(recurrent_input, self.activation_name)
+
+            # Update rule (leaky integration)
+            alpha = 0.15
+            r = r * (1 - alpha) + recurrent_input * alpha
+
+            bump_history.append(r)
+
+            # Transform to cosine wave for output
+            r_delta7 = r @ self.W_delta7
+            r_max = r_delta7.max(dim=1, keepdim=True)[0]
+            r_delta7 = r_delta7 / r_max
+
+            r_history.append(r_delta7)
+
+        return torch.stack(r_history, dim=1), torch.stack(bump_history, dim=1)
+
 
 def av_to_action_signal(av_signal):
     """
@@ -187,46 +169,6 @@ def av_to_action_signal(av_signal):
 
     return action_signal
 
-# def av_to_action_signal_ND(av_signal, action_dim=16):
-#     """
-#     Convert angular velocity signal to n-dimensional action signals.
-#     Returns action vector of shape [batch_size, seq_len, action_dim].
-#     """
-#     scales = torch.linspace(-1, 1, action_dim, device=av_signal.device, dtype=av_signal.dtype)
-#     action_signal = torch.relu(av_signal.unsqueeze(-1) * scales)
-#
-#     return action_signal
-
-def av_to_action_signal_ND(av_signal, action_dim=16, zero_padding=True):
-    """
-    Convert angular velocity signal to n-dimensional action signals.
-    Returns action vector of shape [batch_size, seq_len, action_dim].
-
-    Args:
-        av_signal: (batch_size, seq_len) angular velocity signal
-        action_dim: number of action dimensions
-        zero_padding: if True, only use first 2 dimensions for L/R and zero out rest.
-                      if False, distribute across all dimensions with scaling.
-    """
-    if zero_padding:
-        # Classic L/R setup: only first 2 dimensions, rest are zeros
-        batch_size, seq_len = av_signal.shape
-        action_signal = torch.zeros(batch_size, seq_len, action_dim,
-                                    device=av_signal.device, dtype=av_signal.dtype)
-
-        # First dimension: Left turn (negative velocities)
-        action_signal[:, :, 0] = torch.relu(-av_signal)
-
-        # Second dimension: Right turn (positive velocities)
-        action_signal[:, :, 1] = torch.relu(av_signal)
-
-        # Dimensions 2 onwards remain zero
-    else:
-        # Original behavior: distribute across all dimensions
-        scales = torch.linspace(-1, 1, action_dim, device=av_signal.device, dtype=av_signal.dtype)
-        action_signal = torch.relu(av_signal.unsqueeze(-1) * scales)
-
-    return action_signal
 
 def plot_general_ring_matrices(ring_rnn, title_prefix=""):
     """Plot weight matrices for generalized ring attractor."""
@@ -238,7 +180,7 @@ def plot_general_ring_matrices(ring_rnn, title_prefix=""):
     if num_plots == 1:
         axes = [axes]
 
-    fig.suptitle(f"{title_prefix} Weight Matrices (Action Dim={action_dim}, No Gain)")
+    fig.suptitle(f"{title_prefix} Weight Matrices (Action Dim={action_dim})")
 
     # Plot Wo
     im = axes[0].imshow(ring_rnn.Wo.detach().cpu().numpy())
@@ -252,7 +194,7 @@ def plot_general_ring_matrices(ring_rnn, title_prefix=""):
         fig.colorbar(im, ax=axes[i+1])
 
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-    output_filename = f"{title_prefix.lower().replace(' ', '_')}general_ring_no_gain_matrices.png"
+    output_filename = f"{title_prefix.lower().replace(' ', '_')}general_ring_matrices.png"
     plt.savefig(output_filename)
     print(f"Saved weight matrices plot to {output_filename}")
     plt.close(fig)
@@ -262,15 +204,15 @@ def run_training_and_evaluation(action_dim=2):
     # --- Device Setup ---
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
-    print(f"Training GeneralizedRingAttractorNoGain with action_dim={action_dim}")
-    print("Note: This model has NO gain networks - using raw action signals directly")
+    print(f"Training GeneralizedRingAttractor with action_dim={action_dim}")
+    print("Note: For angular velocity task, we always use 2D action signals [L, R]")
 
     # --- Training Parameters ---
-    num_neurons = 256
+    num_neurons = 120
     training_steps = 1000
     learning_rate = 1e-3
     batch_size = 128
-    seq_len = 100
+    seq_len = 120
 
     # === Create dataset for on-demand batch generation ===
     print(f"\nCreating AVIntegrationDataset for on-demand batch generation...")
@@ -281,24 +223,24 @@ def run_training_and_evaluation(action_dim=2):
         seq_len=seq_len,
         zero_padding_start_ratio=0.1,
         zero_ratios_in_rest=[0.2, 0.5, 0.8],
-        device="cuda",  # Generate directly on GPU
+        device=device,  # Generate directly on GPU
         fast_mode=True   # Use fast vectorized generation
     )
     print("Dataset created - ready for on-demand generation.")
 
     # --- MODEL SETUP ---
     initial_weights = 'random'
-    ring_rnn = GeneralizedRingAttractorNoGain(
+    ring_rnn = GeneralizedRingAttractor(
         num_neurons=num_neurons,
         action_dim=action_dim,
         tau=10,
         dt=1,
         activation='gelu',
-        initialization=initial_weights
+        initialization=initial_weights,
+        hidden_gain_neurons=3
     )
     ring_rnn.to(device)
-    print(f"\nInitializing model with {initial_weights} weights and action_dim={action_dim}")
-    print("NO GAIN NETWORKS in this version")
+    print(f"\nInitializing a generalized model with {initial_weights} weights and action_dim={action_dim}")
     print("--------------------")
 
     plot_general_ring_matrices(ring_rnn, title_prefix=f"Initial {initial_weights}")
@@ -314,7 +256,7 @@ def run_training_and_evaluation(action_dim=2):
         av_signal, target_angle = dataset.generate_batch(batch_size)
 
         # Convert angular velocity to action signals [L, R]
-        action_signal = av_to_action_signal_ND(av_signal, action_dim)  # Always 2D for this task
+        action_signal = av_to_action_signal(av_signal)  # Always 2D for this task
 
         # Create initial bump based on true initial angle
         initial_angle = target_angle[:, 0]
@@ -346,7 +288,7 @@ def run_training_and_evaluation(action_dim=2):
     print("Training finished.")
 
     # --- EVALUATION ---
-    print("\nEvaluating the TRAINED model (NO GAIN)...")
+    print("\nEvaluating the TRAINED generalized model...")
     ring_rnn.eval()
 
     plot_general_ring_matrices(ring_rnn, title_prefix="Trained")
@@ -355,14 +297,14 @@ def run_training_and_evaluation(action_dim=2):
     # Create a temporary dataset for longer evaluation sequence
     test_dataset = AVIntegrationDataset(
         num_samples=1,
-        seq_len=seq_len,  # Longer sequence for evaluation
+        seq_len=200,  # Longer sequence for evaluation
         zero_padding_start_ratio=0.01,
         zero_ratios_in_rest=[0.3],
-        device="cuda",
+        device=device,
         fast_mode=True
     )
     av_signal_test, target_angle_test = test_dataset.generate_batch(1)
-    action_signal_test = av_to_action_signal_ND(av_signal_test, action_dim)  # Always 2D [L, R]
+    action_signal_test = av_to_action_signal(av_signal_test)  # Always 2D [L, R]
 
     # Align the test data for evaluation
     initial_angle_test = target_angle_test[:, 0].unsqueeze(1)
@@ -378,7 +320,7 @@ def run_training_and_evaluation(action_dim=2):
 
     # Create visualization
     fig, axes = plt.subplots(6, 1, figsize=(12, 14), sharex=True)
-    fig.suptitle(f"Performance of Trained Model WITHOUT Gain Networks (Action Dim={action_dim})")
+    fig.suptitle(f"Performance of Trained Generalized Model (Action Dim={action_dim})")
 
     im = axes[0].imshow(cos_activity[0].detach().cpu().numpy().T, aspect='auto', interpolation='nearest')
     axes[0].set_title('Network Activity (Cosine Output)')
@@ -410,7 +352,7 @@ def run_training_and_evaluation(action_dim=2):
                 label='L (Left)', alpha=0.7, color='blue')
     axes[4].plot(action_signal_test[0, :, 1].cpu().numpy(),
                 label='R (Right)', alpha=0.7, color='red')
-    axes[4].set_title(f'Action Signals [L, R] (NO GAIN MODULATION)')
+    axes[4].set_title(f'Action Signals [L, R] (Model capacity: {action_dim}D)')
     axes[4].set_ylabel('Action Value')
     axes[4].legend()
 
@@ -423,14 +365,14 @@ def run_training_and_evaluation(action_dim=2):
     axes[5].legend()
 
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-    output_filename = f"trained_model_no_gain_results_dim{action_dim}.png"
+    output_filename = f"trained_general_model_integration_results_dim{action_dim}.png"
     plt.savefig(output_filename)
     print(f"Saved evaluation plot to {output_filename}")
     plt.close(fig)
 
     # Plot loss curves
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
-    fig.suptitle(f"Training Curves - NO GAIN (Action Dim={action_dim})")
+    fig.suptitle(f"Training Curves (Action Dim={action_dim})")
 
     ax1.plot(loss_history)
     ax1.set_xlabel('Training Step')
@@ -447,8 +389,8 @@ def run_training_and_evaluation(action_dim=2):
     ax2.grid(True, alpha=0.3)
 
     plt.tight_layout()
-    plt.savefig(f'training_curves_no_gain_dim{action_dim}.png')
-    print(f"Saved training curves to training_curves_no_gain_dim{action_dim}.png")
+    plt.savefig(f'training_curves_general_dim{action_dim}.png')
+    print(f"Saved training curves to training_curves_general_dim{action_dim}.png")
     plt.close(fig)
 
     return ring_rnn, loss_history
@@ -456,8 +398,8 @@ def run_training_and_evaluation(action_dim=2):
 
 if __name__ == '__main__':
     import argparse
-    parser = argparse.ArgumentParser(description='Train Generalized Ring Attractor WITHOUT Gain Networks')
-    parser.add_argument('--action_dim', type=int, default=16,
+    parser = argparse.ArgumentParser(description='Train Generalized Ring Attractor')
+    parser.add_argument('--action_dim', type=int, default=2,
                        help='Number of action dimensions (default: 2 for L/R)')
     args = parser.parse_args()
 
