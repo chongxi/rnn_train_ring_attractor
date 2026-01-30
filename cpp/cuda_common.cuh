@@ -7,7 +7,6 @@
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
 #include <cublas_v2.h>
-// #include <cublasLt.h>
 #include <thrust/host_vector.h>
 #include <thrust/device_vector.h>
 #include <iostream>
@@ -83,13 +82,11 @@ __device__ __forceinline__ float activation_derivative(float x) {
         float exp_arg = fminf(fmaxf(-x, -88.f), 88.f);
         float sigmoid_x = 1.f / (1.f + __expf(exp_arg));
         return sigmoid_x * (1.f + x * (1.f - sigmoid_x));
-    } else { // TANH
+    } else {
         float tanh_x = tanhf(x);
         return 1.f - tanh_x * tanh_x;
     }
 }
-
-
 
 template <typename T, uint32_t num_dim>
 struct IndexWrapper

@@ -69,12 +69,7 @@ namespace fwd_mixed {
         IndexWrapper<const float, 2> r_prev_idx(r_prev, batch_size, n_neur);
         IndexWrapper<float, 3> bump_history_idx(bump_history, seq_len, batch_size, n_neur);
 
-        // constexpr int group_size = 16;
         auto cta = cg::this_thread_block();
-        // auto group = cg::tiled_partition<group_size>(cta);
-        // size_t gr_x = group.thread_rank(); // 0 -> 15
-        // size_t gr_y = group.meta_group_rank(); // 0 -> 31
-
         const size_t warp_idx_x = threadIdx.x / WARPSIZE;
         const size_t warp_idx_y = threadIdx.y;
 
@@ -82,8 +77,6 @@ namespace fwd_mixed {
         const int global_n_neuron = blockIdx.x;
 
         if (global_m_base >= batch_size || global_n_neuron >= n_neur) return;
-
-        // bool is_first = (t == 0);
 
         constexpr int ld = BK + 8;
         constexpr int lda = ld;
@@ -238,22 +231,6 @@ namespace fwd_mixed {
         }
     }
 
-    __global__ void permute_021_kernel_vec4(
-        const float* input,   // [seq_len, batch_size, N]
-        float* output,        // [batch_size, seq_len, N]
-        int seq_len,
-        int batch_size,
-        int N
-    ) {
-        int idx = (blockIdx.x * blockDim.x + threadIdx.x) * 4;
-        int n = idx % N;
-        int b = (idx / N) % batch_size;
-        int t = idx / (N * batch_size);
-        float4 data = *reinterpret_cast<const float4*>(&input[idx]);
-        int out_idx = b * (seq_len * N) + t * N + n;
-        *reinterpret_cast<float4*>(&output[out_idx]) = data;
-    }
-
     template<Activation ACT, typename T>
     void fwd_wmma_impl(
         void* A,
@@ -262,9 +239,7 @@ namespace fwd_mixed {
         float J1,
         void* Wo,
         void* r_init,
-        // void* W_delta7,
         void* bump_history,
-        // void* r_history,
         float alpha,
         int N,
         int a_dim,
@@ -280,12 +255,6 @@ namespace fwd_mixed {
         constexpr int WMMA_M = 16;
         constexpr int WMMA_N = 16;
         constexpr int WMMA_K = 16;
-
-
-        // float* bump_history_temp;
-        // cudaMalloc(&bump_history_temp, seq_len * batch_size * N * sizeof(float));
-
-        // constexpr int BLOCKSIZE = (BM / WMMA_M) * (BN / WMMA_N) * WARPSIZE;
 
         dim3 blockSize((BN / WMMA_N) * WARPSIZE, BM / WMMA_M);
 
@@ -306,18 +275,6 @@ namespace fwd_mixed {
                 alpha, N, a_dim, seq_len, t, batch_size
             );
         }
-
-        // int total_elements = seq_len * batch_size * N;
-        // constexpr int THREADS = 256;
-        // int blocks = (total_elements / 4 + THREADS - 1) / THREADS;
-        //
-        // permute_021_kernel_vec4<<<blocks, THREADS>>>(
-        //     bump_history_temp,
-        //     static_cast<float*>(bump_history),
-        //     seq_len, batch_size, N
-        // );
-        //
-        // cudaFree(bump_history_temp);
     }
 
     void fwd_wmma_launcher(
@@ -327,9 +284,7 @@ namespace fwd_mixed {
         float J1,
         void* Wo,
         void* r_init,
-        // void* W_delta7,
         void* bump_history,
-        // void* r_history,
         float alpha,
         int N,
         int a_dim,

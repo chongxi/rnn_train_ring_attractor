@@ -1,11 +1,13 @@
 from utils.benchmark import *
 import sys
 from pathlib import Path
+import sys
+# import cpp.build.fwd as fwd_cuda #type: ignore
+# import cpp.build.bwd as bwd_cuda #type: ignore
+# print("Imported rnn_cuda prebuilt from cpp/build")
+# build_dir = Path(__file__).parent / "build"
 
-import cpp.build.fwd as fwd_cuda #type: ignore
-import cpp.build.bwd as bwd_cuda #type: ignore
-print("Imported rnn_cuda prebuilt from cpp/build")
-
+from cpp.rnn_cuda import fwd_cuda, bwd_cuda
 
 import torch
 from torch.autograd import Function
@@ -582,7 +584,7 @@ if __name__ == "__main__":
     device = "cuda"
     is_profiling = True
     is_benchmarking = True
-    is_check = True
+    is_check = False
     # num_neur = 8
     # a_dim = 4
     # seq_len = 10

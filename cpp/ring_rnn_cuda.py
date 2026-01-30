@@ -40,11 +40,6 @@ def ring_rnn_cuda_func(
     Returns:
         bump_history: (seq_len, batch_size, num_neurons) - neural state history
     """
-    # activation_map = {'relu': 0, 'gelu': 1, 'tanh': 2, 'silu': 3}
-    # if activation not in activation_map:
-    #     raise ValueError(f"Invalid activation '{activation}'. Must be one of {list(activation_map.keys())}.")
-    # activation_type = activation_map[activation]
-
     return RingRnnCudaFunc.apply(
         action_signal,
         Wa,
@@ -65,18 +60,6 @@ class RingRnnCudaFunc(Function):
 
         r = r_init.clone()
         bump_history = torch.empty(seq_len, batch_size, N, device=action_signal.device, dtype=action_signal.dtype)
-
-        # for t in range(seq_len):
-        #     A_t = action_signal[:, t, :]
-        #     Wa_flat = Wa.view(a_dim, N * N)
-        #     Wa_weighted = torch.matmul(A_t, Wa_flat).view(batch_size, N, N)
-        #     W_eff = J0 + J1 * Wo + Wa_weighted
-        #     recurrent_input = (W_eff @ r.unsqueeze(2)).squeeze(2)
-        #     recurrent_input_activated = non_linear(recurrent_input, activation_name)
-        #     r = r * (1 - alpha) + recurrent_input_activated * alpha
-        #     bump_history[t] = r
-
-
         activation_map = {'relu': 0, 'gelu': 1, 'tanh': 2, 'silu': 3}
         if activation_name not in activation_map:
             raise ValueError(f"Invalid activation '{activation_name}'. Must be one of {list(activation_map.keys())}.")
@@ -89,9 +72,7 @@ class RingRnnCudaFunc(Function):
             J1=J1,
             Wo=Wo,
             r_init=r,
-            # W_delta7=self.W_delta7,
             bump_history=bump_history,
-            # r_history=self.r_history,
             alpha=alpha,
             activation_type=activation_type
         )
@@ -156,7 +137,7 @@ class RingRnnCudaFunc(Function):
             grad_re_temp=grad_re_temp,
             grad_W_eff_temp_bf16=grad_W_eff_temp_bf16,
             A_t_temp_bf16=A_t_temp_bf16,
-            grad_re_temp_T=grad_re_temp_T,  # NEW: added this parameter
+            grad_re_temp_T=grad_re_temp_T,
             cublas_handle=handle
         )
 
