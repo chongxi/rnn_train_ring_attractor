@@ -57,7 +57,7 @@ Where:
 ### Training
 
 ```python
-python train_ring_attractor.py
+python train/train_ring_attractor.py
 ```
 
 This will:
@@ -68,11 +68,17 @@ This will:
 or 
 
 ```python
-python train_ring_attractor_save_movie.py
+python train/train_ring_attractor_save_movie.py
 ```
 
 Additionally, this will:
 Save the plot of weights of each 10 training steps (epoch) and compile them into a weight evolution movie (requires ffmpeg)
+
+or train with accelerated CUDA kernel
+```bash
+pip install ninja
+python train_general_ring_no_gain.py
+```
 
 ### Data Generation
 
@@ -147,7 +153,7 @@ This model is inspired by:
 
 ```bash
 pip install ninja
-python fwd_fp32.py
+python train_general_ring_no_gain.py
 ```
 
 2. Benchmark results
